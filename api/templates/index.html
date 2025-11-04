@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KernelBench - GPU Kernel Generator</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/themes/prism-tomorrow.min.css" rel="stylesheet">
+    <style>
+        .code-block {
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        .loading-spinner {
+            display: none;
+        }
+        .status-badge {
+            font-size: 0.8rem;
+        }
+        .form-section {
+            background-color: #f8f9fa;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .result-section {
+            background-color: #ffffff;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid #dee2e6;
+        }
+        .progress-section {
+            display: none;
+        }
+        .error-alert {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container-fluid">
+        <div class="row">
+            <div class="col-12">
+                <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+                    <div class="container">
+                        <a class="navbar-brand" href="#">
+                            <strong>KernelBench</strong> GPU Kernel Generator
+                        </a>
+                    </div>
+                </nav>
+            </div>
+        </div>
+
+        <div class="container mt-4">
+            <div class="row">
+                <div class="col-md-6">
+                    <!-- Input Form -->
+                    <div class="form-section">
+                        <h3>Generate GPU Kernel</h3>
+                        <form id="kernelForm">
+                            <div class="mb-3">
+                                <label for="refArchSrc" class="form-label">Reference Architecture Source Code</label>
+                                <textarea class="form-control" id="refArchSrc" rows="10" 
+                                          placeholder="Paste your reference architecture source code here..."
+                                          required></textarea>
+                                <div class="form-text">The PyTorch reference implementation to optimize</div>
+                            </div>
+
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label for="backend" class="form-label">Backend</label>
+                                        <select class="form-select" id="backend" required>
+                                            <option value="cuda" selected>CUDA</option>
+                                            <option value="triton">Triton</option>
+                                            <option value="cute">CuTe</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label for="serverType" class="form-label">Model Provider</label>
+                                        <select class="form-select" id="serverType" required>
+                                            <option value="deepseek" selected>DeepSeek</option>
+                                            <option value="openai">OpenAI</option>
+                                            <option value="anthropic">Anthropic</option>
+                                            <option value="google">Google</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label for="modelName" class="form-label">Model Name</label>
+                                        <input type="text" class="form-control" id="modelName" value="deepseek-coder" required>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label for="gpuArch" class="form-label">GPU Architecture</label>
+                                        <select class="form-select" id="gpuArch" multiple>
+                                            <option value="Maxwell">Maxwell</option>
+                                            <option value="Pascal">Pascal</option>
+                                            <option value="Volta">Volta</option>
+                                            <option value="Turing">Turing</option>
+                                            <option value="Ampere">Ampere</option>
+                                            <option value="Hopper">Hopper</option>
+                                            <option value="Ada" selected>Ada</option>
+                                        </select>
+                                        <div class="form-text">Hold Ctrl/Cmd to select multiple</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label for="maxTokens" class="form-label">Max Tokens</label>
+                                        <input type="number" class="form-control" id="maxTokens" value="4096" min="256" max="8192">
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label for="temperature" class="form-label">Temperature</label>
+                                        <input type="number" class="form-control" id="temperature" value="0.0" min="0" max="2" step="0.1">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <button type="submit" class="btn btn-primary btn-lg w-100">
+                                <span class="loading-spinner spinner-border spinner-border-sm me-2" role="status"></span>
+                                Generate Kernel
+                            </button>
+                        </form>
+                    </div>
+                </div>
+
+                <div class="col-md-6">
+                    <!-- Progress Section -->
+                    <div class="progress-section">
+                        <div class="result-section">
+                            <h4>Generation Progress</h4>
+                            <div class="d-flex align-items-center mb-3">
+                                <span class="me-2">Status:</span>
+                                <span class="badge bg-secondary status-badge" id="statusBadge">Pending</span>
+                                <span class="ms-2" id="requestId"></span>
+                            </div>
+                            <div class="progress mb-3">
+                                <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                                     role="progressbar" style="width: 0%" id="progressBar"></div>
+                            </div>
+                            <div id="progressText">Submitting request...</div>
+                        </div>
+                    </div>
+
+                    <!-- Error Section -->
+                    <div class="alert alert-danger error-alert" id="errorAlert"></div>
+
+                    <!-- Results Section -->
+                    <div id="resultsSection" style="display: none;">
+                        <div class="result-section">
+                            <h4>Generated Kernel</h4>
+                            <div class="code-block">
+                                <pre><code class="language-cpp" id="generatedKernel"></code></pre>
+                            </div>
+                        </div>
+
+                        <div class="result-section">
+                            <h4>Evaluation Results</h4>
+                            <div class="code-block">
+                                <pre><code class="language-json" id="evalResults"></code></pre>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Request History -->
+            <div class="row mt-4">
+                <div class="col-12">
+                    <div class="result-section">
+                        <h4>Recent Requests</h4>
+                        <div class="table-responsive">
+                            <table class="table table-striped" id="requestsTable">
+                                <thead>
+                                    <tr>
+                                        <th>Request ID</th>
+                                        <th>Status</th>
+                                        <th>Backend</th>
+                                        <th>Model</th>
+                                        <th>Created</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/plugins/autoloader/prism-autoloader.min.js"></script>
+    <script src="/static/app.js"></script>
+</body>
+</html>

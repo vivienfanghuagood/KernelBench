@@ -157,7 +157,15 @@ def query_server(
             model = model_name
             
         case "openai":
-            client = OpenAI(api_key=OPENAI_KEY)
+            # client = OpenAI(api_key=OPENAI_KEY)
+            client = OpenAI(
+                base_url="https://llm-api.amd.com/OpenAI",
+                api_key="dummy",
+                default_headers={
+                    "Ocp-Apim-Subscription-Key": os.environ.get("LLM_GATEWAY_KEY"),
+                    "user": "hfang@amd.com"
+                }
+            )
             model = model_name
         case _:
             raise NotImplementedError

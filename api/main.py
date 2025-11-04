@@ -33,6 +33,7 @@ class GenerationResponse(BaseModel):
 class StatusResponse(BaseModel):
     request_id: str
     status: str
+    ref_arch_src: Optional[str]
     created_at: Optional[str]
     started_at: Optional[str]
     completed_at: Optional[str]
@@ -110,6 +111,7 @@ async def get_generation_status(request_id: str):
         return StatusResponse(
             request_id=request_data['id'],
             status=request_data['status'],
+            ref_arch_src=request_data.get('ref_arch_src'),
             created_at=request_data['created_at'],
             started_at=request_data['started_at'],
             completed_at=request_data['completed_at'],

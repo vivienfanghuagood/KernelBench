@@ -36,18 +36,23 @@
         .error-alert {
             display: none;
         }
-        #refArchSrc {
-            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-            font-size: 13px;
-            line-height: 1.5;
-            background-color: #2d2d2d;
-            color: #ccc;
-            border: 1px solid #444;
-            border-radius: 4px;
-            padding: 12px;
+        .eval-results-formatted {
+            padding: 10px;
         }
-        #refArchSrc::placeholder {
-            color: #888;
+        .eval-results-formatted .badge {
+            font-size: 0.9rem;
+            padding: 0.5em 0.8em;
+            margin-right: 0.5em;
+        }
+        .eval-results-formatted strong {
+            color: #495057;
+        }
+        .eval-results-formatted .table {
+            background-color: #f8f9fa;
+        }
+        .eval-results-formatted .table th {
+            background-color: #e9ecef;
+            font-weight: 600;
         }
     </style>
 </head>
@@ -171,17 +176,22 @@
                     <!-- Results Section -->
                     <div id="resultsSection" style="display: none;">
                         <div class="result-section">
+                            <h4>Reference Architecture</h4>
+                            <div class="code-block">
+                                <pre><code class="language-python" id="refArchDisplay"></code></pre>
+                            </div>
+                        </div>
+
+                        <div class="result-section">
                             <h4>Generated Kernel</h4>
                             <div class="code-block">
-                                <pre><code class="language-python" id="generatedKernel"></code></pre>
+                                <pre><code class="language-cpp" id="generatedKernel"></code></pre>
                             </div>
                         </div>
 
                         <div class="result-section">
                             <h4>Evaluation Results</h4>
-                            <div class="code-block">
-                                <pre><code class="language-json" id="evalResults"></code></pre>
-                            </div>
+                            <div id="evalResults"></div>
                         </div>
                     </div>
                 </div>
@@ -218,4 +228,4 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/plugins/autoloader/prism-autoloader.min.js"></script>
     <script src="/static/app.js"></script>
 </body>
-</html>
+</html> 

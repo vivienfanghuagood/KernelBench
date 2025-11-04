@@ -103,6 +103,8 @@ class KernelBenchAPI {
                 if (status.status === 'completed' || status.status === 'failed') {
                     this.stopPolling();
                     this.showLoading(false);
+                    this.hideProgress();
+                    
                     if (status.status === 'completed') {
                         this.showResults(status);
                     } else {
@@ -163,19 +165,205 @@ class KernelBenchAPI {
 
     showResults(status) {
         const resultsSection = document.getElementById('resultsSection');
+        const refArchDisplay = document.getElementById('refArchDisplay');
         const generatedKernel = document.getElementById('generatedKernel');
         const evalResults = document.getElementById('evalResults');
 
+        // Display reference architecture
+        refArchDisplay.textContent = status.ref_arch_src || 'No reference code';
+        
+        // Display generated kernel
         generatedKernel.textContent = status.generated_kernel || 'No kernel generated';
-        evalResults.textContent = status.eval_result || 'No evaluation results';
+        
+        // Parse and display evaluation results
+        evalResults.innerHTML = this.formatEvalResults(status.eval_result);
 
         resultsSection.style.display = 'block';
-        this.hideProgress();
 
         // Re-highlight code
         if (window.Prism) {
             Prism.highlightAll();
         }
+    }
+
+    formatEvalResults(evalResultStr) {
+        if (!evalResultStr) {
+            return '<div class="alert alert-warning">No evaluation results</div>';
+        }
+
+        try {
+            // Parse the eval result string
+            // Expected format: "compiled=True correctness=True metadata={'hardware': 'NVIDIA GeForce RTX 4090', ...} runtime=1.97 runtime_stats={...}"
+            const result = this.parseEvalString(evalResultStr);
+            
+            let html = '<div class="eval-results-formatted">';
+            
+            // Compilation status
+            const compiledBadge = result.compiled 
+                ? '<span class="badge bg-success">✓ Compiled</span>'
+                : '<span class="badge bg-danger">✗ Failed to Compile</span>';
+            
+            // Correctness status
+            const correctnessBadge = result.correctness 
+                ? '<span class="badge bg-success">✓ Correct</span>'
+                : '<span class="badge bg-danger">✗ Incorrect</span>';
+            
+            html += `
+                <div class="mb-3">
+                    <strong>Status:</strong> ${compiledBadge} ${correctnessBadge}
+                </div>
+            `;
+            
+            // Hardware info
+            if (result.metadata && result.metadata.hardware) {
+                html += `
+                    <div class="mb-3">
+                        <strong>Hardware:</strong> ${result.metadata.hardware}
+                        ${result.metadata.device ? ` (Device ${result.metadata.device})` : ''}
+                    </div>
+                `;
+            }
+            
+            // Correctness trials
+            if (result.metadata && result.metadata.correctness_trials) {
+                html += `
+                    <div class="mb-3">
+                        <strong>Correctness Trials:</strong> ${result.metadata.correctness_trials}
+                    </div>
+                `;
+            }
+            
+            // Runtime
+            if (result.runtime !== null) {
+                html += `
+                    <div class="mb-3">
+                        <strong>Runtime:</strong> <span class="badge bg-info">${result.runtime.toFixed(2)} ms</span>
+                    </div>
+                `;
+            }
+            
+            // Runtime statistics
+            if (result.runtime_stats) {
+                const stats = result.runtime_stats;
+                html += `
+                    <div class="mb-3">
+                        <strong>Runtime Statistics:</strong>
+                        <table class="table table-sm table-bordered mt-2">
+                            <thead>
+                                <tr>
+                                    <th>Mean</th>
+                                    <th>Std Dev</th>
+                                    <th>Min</th>
+                                    <th>Max</th>
+                                    <th>Trials</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>${stats.mean ? stats.mean.toFixed(2) : 'N/A'} ms</td>
+                                    <td>${stats.std ? stats.std.toFixed(4) : 'N/A'} ms</td>
+                                    <td>${stats.min ? stats.min.toFixed(2) : 'N/A'} ms</td>
+                                    <td>${stats.max ? stats.max.toFixed(2) : 'N/A'} ms</td>
+                                    <td>${stats.num_trials || 'N/A'}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                `;
+            }
+            
+            html += '</div>';
+            
+            return html;
+            
+        } catch (error) {
+            console.error('Error formatting eval results:', error);
+            // Fallback to showing raw text
+            return `<pre class="text-muted">${evalResultStr}</pre>`;
+        }
+    }
+
+    parseEvalString(str) {
+        const result = {
+            compiled: null,
+            correctness: null,
+            metadata: {},
+            runtime: null,
+            runtime_stats: {}
+        };
+
+        try {
+            // Extract compiled
+            const compiledMatch = str.match(/compiled=(True|False)/);
+            if (compiledMatch) {
+                result.compiled = compiledMatch[1] === 'True';
+            }
+
+            // Extract correctness
+            const correctnessMatch = str.match(/correctness=(True|False)/);
+            if (correctnessMatch) {
+                result.correctness = correctnessMatch[1] === 'True';
+            }
+
+            // Extract metadata - need to handle nested braces
+            const metadataMatch = str.match(/metadata=(\{[^}]*\})/);
+            if (metadataMatch) {
+                try {
+                    const metadataStr = metadataMatch[1]
+                        .replace(/'/g, '"')
+                        .replace(/\((\d+)\s*\/\s*(\d+)\)/g, '"($1 / $2)"'); // Handle fractions like (3 / 3)
+                    result.metadata = JSON.parse(metadataStr);
+                } catch (e) {
+                    console.error('Error parsing metadata:', e);
+                }
+            }
+
+            // Extract runtime (but not runtime_stats)
+            const runtimeMatch = str.match(/runtime=([\d.]+)(?=\s|$|runtime_stats)/);
+            if (runtimeMatch) {
+                result.runtime = parseFloat(runtimeMatch[1]);
+            }
+
+            // Extract runtime_stats - need to handle nested dictionary
+            // Use a more robust method to extract the dictionary
+            const statsStartIndex = str.indexOf('runtime_stats={');
+            if (statsStartIndex !== -1) {
+                const statsStart = statsStartIndex + 'runtime_stats='.length;
+                let braceCount = 0;
+                let statsEnd = statsStart;
+                
+                // Find the matching closing brace
+                for (let i = statsStart; i < str.length; i++) {
+                    if (str[i] === '{') braceCount++;
+                    if (str[i] === '}') {
+                        braceCount--;
+                        if (braceCount === 0) {
+                            statsEnd = i + 1;
+                            break;
+                        }
+                    }
+                }
+                
+                if (statsEnd > statsStart) {
+                    const statsStr = str.substring(statsStart, statsEnd)
+                        .replace(/'/g, '"')
+                        .replace(/\bNone\b/g, 'null')
+                        .replace(/\bTrue\b/g, 'true')
+                        .replace(/\bFalse\b/g, 'false');
+                    
+                    try {
+                        result.runtime_stats = JSON.parse(statsStr);
+                    } catch (e) {
+                        console.error('Error parsing runtime_stats:', e, 'String was:', statsStr);
+                    }
+                }
+            }
+
+        } catch (error) {
+            console.error('Error parsing eval string:', error);
+        }
+
+        return result;
     }
 
     async loadRecentRequests() {
@@ -298,7 +486,8 @@ document.addEventListener('DOMContentLoaded', function() {
     sampleButton.className = 'btn btn-sm btn-outline-secondary mt-2';
     sampleButton.textContent = 'Load Sample Code';
     sampleButton.onclick = () => {
-        refArchSrc.value = `import torch
+        refArchSrc.value = `
+import torch
 import torch.nn as nn
 
 class Model(nn.Module):
@@ -331,8 +520,7 @@ def get_inputs():
     return [A, B]
 
 def get_init_inputs():
-    return []  # No special initialization inputs needed
-    `;
+    return []  # No special initialization inputs needed`;
     };
     
     refArchSrc.parentNode.appendChild(sampleButton);

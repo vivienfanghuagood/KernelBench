@@ -18,12 +18,12 @@ templates = Jinja2Templates(directory="api/templates")
 
 class GenerationRequest(BaseModel):
     ref_arch_src: str
-    gpu_arch: List[str] = ["Ada"]
+    gpu_arch: List[str] = ["4090"]
     backend: str = "triton"
     model_name: str = "gpt-5"
     server_type: str = "openai"
     max_tokens: int = 4096
-    temperature: float = 1.0
+    temperature: float = 0.0
 
 class GenerationResponse(BaseModel):
     request_id: str
@@ -70,7 +70,7 @@ async def create_generation_request(request: GenerationRequest, background_tasks
             )
         
         # Validate GPU architecture
-        valid_archs = ["Maxwell", "Pascal", "Volta", "Turing", "Ampere", "Hopper", "Ada"]
+        valid_archs = ["mi300", "4090", "Hopper"]
         for arch in request.gpu_arch:
             if arch not in valid_archs:
                 raise HTTPException(
@@ -142,6 +142,6 @@ if __name__ == "__main__":
         "api.main:app",
         host="0.0.0.0",
         port=8000,
-        reload=True,
+        reload=False,
         log_level="info"
     )

@@ -72,8 +72,8 @@
                                     <div class="mb-3">
                                         <label for="backend" class="form-label">Backend</label>
                                         <select class="form-select" id="backend" required>
-                                            <option value="cuda" selected>CUDA</option>
-                                            <option value="triton">Triton</option>
+                                            <option value="cuda">CUDA</option>
+                                            <option value="triton" selected>Triton</option>
                                             <option value="cute">CuTe</option>
                                         </select>
                                     </div>
@@ -82,8 +82,8 @@
                                     <div class="mb-3">
                                         <label for="serverType" class="form-label">Model Provider</label>
                                         <select class="form-select" id="serverType" required>
-                                            <option value="deepseek" selected>DeepSeek</option>
-                                            <option value="openai">OpenAI</option>
+                                            <option value="deepseek">DeepSeek</option>
+                                            <option value="openai" selected>OpenAI</option>
                                             <option value="anthropic">Anthropic</option>
                                             <option value="google">Google</option>
                                         </select>
@@ -95,20 +95,16 @@
                                 <div class="col-md-6">
                                     <div class="mb-3">
                                         <label for="modelName" class="form-label">Model Name</label>
-                                        <input type="text" class="form-control" id="modelName" value="deepseek-coder" required>
+                                        <input type="text" class="form-control" id="modelName" value="gpt-5" required>
                                     </div>
                                 </div>
                                 <div class="col-md-6">
                                     <div class="mb-3">
                                         <label for="gpuArch" class="form-label">GPU Architecture</label>
                                         <select class="form-select" id="gpuArch" multiple>
-                                            <option value="Maxwell">Maxwell</option>
-                                            <option value="Pascal">Pascal</option>
-                                            <option value="Volta">Volta</option>
-                                            <option value="Turing">Turing</option>
-                                            <option value="Ampere">Ampere</option>
-                                            <option value="Hopper">Hopper</option>
-                                            <option value="Ada" selected>Ada</option>
+                                            <option value="mi300">AMD MI300x</option>
+                                            <option value="4090" selected>RTX 4090</option>
+                                            <option value="Hopper">H200 (Hopper)</option>
                                         </select>
                                         <div class="form-text">Hold Ctrl/Cmd to select multiple</div>
                                     </div>

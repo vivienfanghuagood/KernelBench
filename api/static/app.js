@@ -24,11 +24,11 @@ class KernelBenchAPI {
         const modelNameInput = document.getElementById('modelName');
         const modelMap = {
             'deepseek': 'deepseek-coder',
-            'openai': 'gpt-4o-2024-08-06',
+            'openai': 'gpt-5',
             'anthropic': 'claude-3-5-sonnet-20241022',
             'google': 'gemini-1.5-flash-002'
         };
-        modelNameInput.value = modelMap[serverType] || 'deepseek-coder';
+        modelNameInput.value = modelMap[serverType] || 'gpt-5';
     }
 
     async handleFormSubmit(e) {
@@ -77,7 +77,7 @@ class KernelBenchAPI {
         const gpuArchSelect = document.getElementById('gpuArch');
         const selectedArches = Array.from(gpuArchSelect.selectedOptions).map(option => option.value);
         if (selectedArches.length === 0) {
-            selectedArches.push('Ada'); // Default
+            selectedArches.push('4090'); // Default
         }
 
         return {

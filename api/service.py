@@ -66,6 +66,7 @@ class KernelGenerationService:
             # Generate kernel - run in thread pool since it's blocking
             loop = asyncio.get_event_loop()
             custom_kernel = await loop.run_in_executor(None, inference_server, custom_prompt)
+            # import pdb;pdb.set_trace()
             custom_kernel = extract_first_code(custom_kernel, ["python", "cpp"])
             
             if custom_kernel is None:

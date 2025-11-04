@@ -36,6 +36,19 @@
         .error-alert {
             display: none;
         }
+        #refArchSrc {
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 13px;
+            line-height: 1.5;
+            background-color: #2d2d2d;
+            color: #ccc;
+            border: 1px solid #444;
+            border-radius: 4px;
+            padding: 12px;
+        }
+        #refArchSrc::placeholder {
+            color: #888;
+        }
     </style>
 </head>
 <body>
@@ -160,7 +173,7 @@
                         <div class="result-section">
                             <h4>Generated Kernel</h4>
                             <div class="code-block">
-                                <pre><code class="language-cpp" id="generatedKernel"></code></pre>
+                                <pre><code class="language-python" id="generatedKernel"></code></pre>
                             </div>
                         </div>
 

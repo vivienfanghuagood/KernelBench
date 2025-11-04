@@ -62,7 +62,6 @@ class KernelBenchAPI {
 
         } catch (error) {
             this.showError('Failed to submit request: ' + error.message);
-        } finally {
             this.showLoading(false);
         }
     }
@@ -103,6 +102,7 @@ class KernelBenchAPI {
 
                 if (status.status === 'completed' || status.status === 'failed') {
                     this.stopPolling();
+                    this.showLoading(false);
                     if (status.status === 'completed') {
                         this.showResults(status);
                     } else {
@@ -249,12 +249,14 @@ class KernelBenchAPI {
         const spinner = document.querySelector('.loading-spinner');
         const button = document.querySelector('button[type="submit"]');
         
+        if (!button) return; // Guard against missing button
+        
         if (show) {
-            spinner.style.display = 'inline-block';
+            if (spinner) spinner.style.display = 'inline-block';
             button.disabled = true;
             button.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Generating...';
         } else {
-            spinner.style.display = 'none';
+            if (spinner) spinner.style.display = 'none';
             button.disabled = false;
             button.innerHTML = 'Generate Kernel';
         }
@@ -266,10 +268,6 @@ class KernelBenchAPI {
 
     hideProgress() {
         document.querySelector('.progress-section').style.display = 'none';
-    }
-
-    showResults() {
-        document.getElementById('resultsSection').style.display = 'block';
     }
 
     hideResults() {
@@ -301,15 +299,40 @@ document.addEventListener('DOMContentLoaded', function() {
     sampleButton.textContent = 'Load Sample Code';
     sampleButton.onclick = () => {
         refArchSrc.value = `import torch
+import torch.nn as nn
 
-def square_matrix_multiplication(A, B):
+class Model(nn.Module):
     """
-    Simple square matrix multiplication
-    A: [N, N] 
-    B: [N, N]
-    Returns: C = A @ B [N, N]
+    Simple model that performs a single matrix multiplication (C = A * B)
     """
-    return torch.matmul(A, B)`;
+    def __init__(self):
+        super(Model, self).__init__()
+    
+    def forward(self, A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
+        """
+        Performs matrix multiplication.
+
+        Args:
+            A: Input tensor of shape (M, K).
+            B: Input tensor of shape (K, N).
+
+        Returns:
+            Output tensor of shape (M, N).
+        """
+        return torch.matmul(A, B)
+
+M = 1024 * 2
+K = 4096 * 2
+N = 2048 * 2
+
+def get_inputs():
+    A = torch.rand(M, K)
+    B = torch.rand(K, N)
+    return [A, B]
+
+def get_init_inputs():
+    return []  # No special initialization inputs needed
+    `;
     };
     
     refArchSrc.parentNode.appendChild(sampleButton);

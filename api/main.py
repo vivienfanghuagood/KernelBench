@@ -70,13 +70,13 @@ async def create_generation_request(request: GenerationRequest, background_tasks
             )
         
         # Validate GPU architecture
-        valid_archs = ["mi300", "4090", "Hopper"]
-        for arch in request.gpu_arch:
-            if arch not in valid_archs:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid GPU architecture: {arch}. Must be one of {valid_archs}"
-                )
+        # valid_archs = ["mi300", "Ada", "Hopper"]
+        # for arch in request.gpu_arch:
+        #     if arch not in valid_archs:
+        #         raise HTTPException(
+        #             status_code=400,
+        #             detail=f"Invalid GPU architecture: {arch}. Must be one of {valid_archs}"
+        #         )
         
         # Submit the request
         request_id = kernel_service.submit_generation_request(
@@ -141,7 +141,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "api.main:app",
         host="0.0.0.0",
-        port=8000,
+        port=8009,
         reload=False,
         log_level="info"
     )

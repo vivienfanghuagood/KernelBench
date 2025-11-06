@@ -9,6 +9,7 @@ class KernelBenchAPI {
     init() {
         this.setupEventListeners();
         this.loadRecentRequests();
+        this.loadSampleFiles();
     }
 
     setupEventListeners() {
@@ -18,6 +19,12 @@ class KernelBenchAPI {
         // Update model name based on server type
         const serverTypeSelect = document.getElementById('serverType');
         serverTypeSelect.addEventListener('change', (e) => this.updateModelName(e.target.value));
+
+        // Auto-load sample code when selection changes
+        const sampleSelect = document.getElementById('sampleSelect');
+        if (sampleSelect) {
+            sampleSelect.addEventListener('change', () => this.loadSelectedSample());
+        }
     }
 
     updateModelName(serverType) {
@@ -29,6 +36,86 @@ class KernelBenchAPI {
             'google': 'gemini-1.5-flash-002'
         };
         modelNameInput.value = modelMap[serverType] || 'gpt-5';
+    }
+
+    async loadSampleFiles() {
+        try {
+            const response = await fetch('/api/samples');
+            if (!response.ok) {
+                throw new Error('Failed to load sample files');
+            }
+            
+            const data = await response.json();
+            const sampleSelect = document.getElementById('sampleSelect');
+            
+            if (!sampleSelect) return;
+            
+            // Clear existing options except the first one
+            sampleSelect.innerHTML = '<option value="">-- Select a sample to load --</option>';
+            
+            // Group samples by level
+            const level1Samples = data.samples.filter(s => s.level === 'level1');
+            const level2Samples = data.samples.filter(s => s.level === 'level2');
+            
+            // Add level1 samples
+            if (level1Samples.length > 0) {
+                const level1Group = document.createElement('optgroup');
+                level1Group.label = 'Level 1';
+                level1Samples.forEach(sample => {
+                    const option = document.createElement('option');
+                    option.value = sample.path;
+                    option.textContent = sample.name;
+                    level1Group.appendChild(option);
+                });
+                sampleSelect.appendChild(level1Group);
+            }
+            
+            // Add level2 samples
+            if (level2Samples.length > 0) {
+                const level2Group = document.createElement('optgroup');
+                level2Group.label = 'Level 2';
+                level2Samples.forEach(sample => {
+                    const option = document.createElement('option');
+                    option.value = sample.path;
+                    option.textContent = sample.name;
+                    level2Group.appendChild(option);
+                });
+                sampleSelect.appendChild(level2Group);
+            }
+        } catch (error) {
+            console.error('Error loading sample files:', error);
+        }
+    }
+
+    async loadSelectedSample() {
+        const sampleSelect = document.getElementById('sampleSelect');
+        const refArchSrc = document.getElementById('refArchSrc');
+        
+        if (!sampleSelect || !refArchSrc) return;
+        
+        const selectedPath = sampleSelect.value;
+        if (!selectedPath) {
+            // If empty option selected, clear the textarea
+            refArchSrc.value = '';
+            return;
+        }
+        
+        try {
+            // Parse the path (e.g., "level1/1_Square_matrix_multiplication_.py")
+            const [level, filename] = selectedPath.split('/');
+            
+            const response = await fetch(`/api/samples/${level}/${filename}`);
+            if (!response.ok) {
+                throw new Error('Failed to load sample content');
+            }
+            
+            const data = await response.json();
+            refArchSrc.value = data.content;
+            
+        } catch (error) {
+            this.showError('Failed to load sample: ' + error.message);
+            setTimeout(() => this.hideError(), 3000);
+        }
     }
 
     async handleFormSubmit(e) {
@@ -611,53 +698,3 @@ class KernelBenchAPI {
 
 // Initialize the API client
 const api = new KernelBenchAPI();
-
-// Add sample data button (for testing)
-document.addEventListener('DOMContentLoaded', function() {
-    const refArchSrc = document.getElementById('refArchSrc');
-    
-    // Add a button to load sample data
-    const sampleButton = document.createElement('button');
-    sampleButton.type = 'button';
-    sampleButton.className = 'btn btn-sm btn-outline-secondary mt-2';
-    sampleButton.textContent = 'Load Sample Code';
-    sampleButton.onclick = () => {
-        refArchSrc.value = `
-import torch
-import torch.nn as nn
-
-class Model(nn.Module):
-    """
-    Simple model that performs a single matrix multiplication (C = A * B)
-    """
-    def __init__(self):
-        super(Model, self).__init__()
-    
-    def forward(self, A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
-        """
-        Performs matrix multiplication.
-
-        Args:
-            A: Input tensor of shape (M, K).
-            B: Input tensor of shape (K, N).
-
-        Returns:
-            Output tensor of shape (M, N).
-        """
-        return torch.matmul(A, B)
-
-M = 1024 * 2
-K = 4096 * 2
-N = 2048 * 2
-
-def get_inputs():
-    A = torch.rand(M, K)
-    B = torch.rand(K, N)
-    return [A, B]
-
-def get_init_inputs():
-    return []  # No special initialization inputs needed`;
-    };
-    
-    refArchSrc.parentNode.appendChild(sampleButton);
-});

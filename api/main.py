@@ -140,6 +140,60 @@ async def get_all_requests(limit: int = 100):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/samples")
+async def get_sample_files():
+    """Get list of sample files from KernelBench/level1 and level2"""
+    try:
+        samples = []
+        base_path = "KernelBench"
+        
+        for level in ["level1", "level2"]:
+            level_path = os.path.join(base_path, level)
+            if os.path.exists(level_path):
+                files = sorted([f for f in os.listdir(level_path) if f.endswith('.py')])
+                for filename in files:
+                    # Remove .py extension and use as display name
+                    display_name = filename[:-3]
+                    samples.append({
+                        "name": display_name,
+                        "path": f"{level}/{filename}",
+                        "level": level
+                    })
+        
+        return {"samples": samples}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/samples/{level}/{filename}")
+async def get_sample_content(level: str, filename: str):
+    """Get content of a specific sample file"""
+    try:
+        # Validate level
+        if level not in ["level1", "level2"]:
+            raise HTTPException(status_code=400, detail="Invalid level. Must be 'level1' or 'level2'")
+        
+        # Construct file path
+        file_path = os.path.join("KernelBench", level, filename)
+        
+        # Security check: ensure the file is within the expected directory
+        abs_file_path = os.path.abspath(file_path)
+        abs_base_path = os.path.abspath("KernelBench")
+        if not abs_file_path.startswith(abs_base_path):
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        # Read file content
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="Sample file not found")
+        
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        return {"content": content, "filename": filename, "level": level}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""

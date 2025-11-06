@@ -201,8 +201,8 @@ def main(config: GenerationConfig):
     elif config.dataset_src == "local":
         curr_level_dataset = construct_kernelbench_dataset(config.level)
 
-    # num_problems_in_level = len(curr_level_dataset)
-    num_problems_in_level = 20
+    num_problems_in_level = len(curr_level_dataset)
+    # num_problems_in_level = 20
 
     if config.subset == (None, None):
         problem_id_range = range(1, num_problems_in_level)

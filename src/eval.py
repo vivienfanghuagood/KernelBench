@@ -96,8 +96,11 @@ class KernelExecResult(BaseModel):
     compiled: bool = False
     correctness: bool = False
     metadata: dict = {}
-    runtime: float = -1.0  # in us, only recorded if we decide to measure performance
+    runtime: float = -1.0  # in ms, only recorded if we decide to measure performance
     runtime_stats: dict = {}  # only recorded if we decide to measure performance
+    ref_runtime: float = -1.0  # in ms, reference model runtime
+    ref_runtime_stats: dict = {}  # reference model runtime statistics
+    speedup: float = -1.0  # speedup ratio: ref_runtime / custom_runtime
 
 
 def load_original_model_and_inputs(
@@ -634,22 +637,37 @@ def eval_kernel_against_ref(
                     print("[Eval] Measuring Performance as Sample is Correct")
 
                 torch.cuda.synchronize(device=device)
+                
+                # Measure reference model performance
+                if verbose:
+                    print("[Eval] Measuring Reference Model Performance")
+                set_seed(seed_num)
+                ref_inputs = get_inputs()
+                ref_inputs = [_process_input_tensor(x, device, backend) for x in ref_inputs]
+                ref_model = original_model.to(device=device)
+                torch.cuda.synchronize(device=device)
+                
+                ref_elapsed_times = time_execution_with_cuda_event(
+                    ref_model,
+                    *ref_inputs,
+                    num_trials=num_perf_trials,
+                    verbose=verbose,
+                    device=device,
+                )
+                ref_runtime_stats = get_timing_stats(ref_elapsed_times, device=device)
+                
+                if verbose:
+                    print(f"[Eval] Reference Performance Stats: {ref_runtime_stats}")
+                kernel_exec_result.ref_runtime = ref_runtime_stats["mean"]
+                kernel_exec_result.ref_runtime_stats = ref_runtime_stats
+                
+                # Measure custom model performance
+                if verbose:
+                    print("[Eval] Measuring Custom Model Performance")
                 set_seed(seed_num)
                 inputs = get_inputs()
-                # Convert inputs for performance measurement
                 inputs = [_process_input_tensor(x, device, backend) for x in inputs]
                 
-                # if backend.lower() == "tilelang":
-                #     try:
-                #         model_new = custom_model.to(device=device, dtype=torch.float16)
-                #     except Exception as e:
-                #         # TileLang JIT kernels may not support .to(), already on GPU
-                #         if verbose:
-                #             print(f"[Info] Line 616 - Could not call .to() on custom model for perf measurement (TileLang): {e}")
-                #             print("[Traceback] From performance measurement - line 616:")
-                #             traceback.print_exc()
-                #         model_new = custom_model
-                # else:
                 model_new = custom_model.to(device=device)
                 torch.cuda.synchronize(device=device)
 
@@ -663,13 +681,19 @@ def eval_kernel_against_ref(
                 runtime_stats = get_timing_stats(elapsed_times, device=device)
 
                 if verbose:
-                    print(f"[Eval] Performance Stats: {runtime_stats}")
+                    print(f"[Eval] Custom Performance Stats: {runtime_stats}")
                 kernel_exec_result.runtime = runtime_stats["mean"]
                 kernel_exec_result.runtime_stats = runtime_stats
+                
+                # Calculate speedup
+                if kernel_exec_result.runtime > 0 and kernel_exec_result.ref_runtime > 0:
+                    kernel_exec_result.speedup = kernel_exec_result.ref_runtime / kernel_exec_result.runtime
+                    if verbose:
+                        print(f"[Eval] Speedup: {kernel_exec_result.speedup:.2f}x")
         except Exception as e:
             if verbose:
                 print(f"[Eval] Error in Measuring Performance: {e}")
-            kernel_exec_result.metadata["error_during_performance"] = e
+            kernel_exec_result.metadata["error_during_performance"] = str(e)
 
     graceful_eval_cleanup(context, device, tempfile)
     return kernel_exec_result

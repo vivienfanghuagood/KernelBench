@@ -233,43 +233,91 @@ class KernelBenchAPI {
                 `;
             }
             
-            // Runtime
-            if (result.runtime !== null) {
+            // Speedup (if available)
+            if (result.speedup !== null && result.speedup > 0) {
+                const speedupClass = result.speedup > 1 ? 'bg-success' : result.speedup < 1 ? 'bg-warning' : 'bg-secondary';
                 html += `
                     <div class="mb-3">
-                        <strong>Runtime:</strong> <span class="badge bg-info">${result.runtime.toFixed(2)} ms</span>
+                        <strong>Speedup:</strong> <span class="badge ${speedupClass} fs-5">${result.speedup.toFixed(2)}x</span>
+                        ${result.speedup > 1 ? '🚀 Faster than reference!' : result.speedup < 1 ? '⚠️ Slower than reference' : ''}
                     </div>
                 `;
             }
             
-            // Runtime statistics
-            if (result.runtime_stats) {
-                const stats = result.runtime_stats;
+            // Performance comparison table
+            if (result.ref_runtime !== null && result.runtime !== null) {
                 html += `
                     <div class="mb-3">
-                        <strong>Runtime Statistics:</strong>
+                        <strong>Performance Comparison:</strong>
                         <table class="table table-sm table-bordered mt-2">
                             <thead>
                                 <tr>
-                                    <th>Mean</th>
+                                    <th>Model</th>
+                                    <th>Mean Runtime</th>
                                     <th>Std Dev</th>
                                     <th>Min</th>
                                     <th>Max</th>
-                                    <th>Trials</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                <tr>
-                                    <td>${stats.mean ? stats.mean.toFixed(2) : 'N/A'} ms</td>
-                                    <td>${stats.std ? stats.std.toFixed(4) : 'N/A'} ms</td>
-                                    <td>${stats.min ? stats.min.toFixed(2) : 'N/A'} ms</td>
-                                    <td>${stats.max ? stats.max.toFixed(2) : 'N/A'} ms</td>
-                                    <td>${stats.num_trials || 'N/A'}</td>
+                                <tr class="table-light">
+                                    <td><strong>Reference (PyTorch)</strong></td>
+                                    <td>${result.ref_runtime.toFixed(2)} ms</td>
+                                    <td>${result.ref_runtime_stats.std ? result.ref_runtime_stats.std.toFixed(4) : 'N/A'} ms</td>
+                                    <td>${result.ref_runtime_stats.min ? result.ref_runtime_stats.min.toFixed(2) : 'N/A'} ms</td>
+                                    <td>${result.ref_runtime_stats.max ? result.ref_runtime_stats.max.toFixed(2) : 'N/A'} ms</td>
+                                </tr>
+                                <tr class="table-primary">
+                                    <td><strong>Custom Kernel</strong></td>
+                                    <td>${result.runtime.toFixed(2)} ms</td>
+                                    <td>${result.runtime_stats.std ? result.runtime_stats.std.toFixed(4) : 'N/A'} ms</td>
+                                    <td>${result.runtime_stats.min ? result.runtime_stats.min.toFixed(2) : 'N/A'} ms</td>
+                                    <td>${result.runtime_stats.max ? result.runtime_stats.max.toFixed(2) : 'N/A'} ms</td>
                                 </tr>
                             </tbody>
                         </table>
+                        <small class="text-muted">Number of trials: ${result.runtime_stats.num_trials || 'N/A'}</small>
                     </div>
                 `;
+            } else {
+                // Show only custom runtime if ref_runtime is not available (legacy support)
+                if (result.runtime !== null) {
+                    html += `
+                        <div class="mb-3">
+                            <strong>Runtime:</strong> <span class="badge bg-info">${result.runtime.toFixed(2)} ms</span>
+                        </div>
+                    `;
+                }
+                
+                // Runtime statistics
+                if (result.runtime_stats && Object.keys(result.runtime_stats).length > 0) {
+                    const stats = result.runtime_stats;
+                    html += `
+                        <div class="mb-3">
+                            <strong>Runtime Statistics:</strong>
+                            <table class="table table-sm table-bordered mt-2">
+                                <thead>
+                                    <tr>
+                                        <th>Mean</th>
+                                        <th>Std Dev</th>
+                                        <th>Min</th>
+                                        <th>Max</th>
+                                        <th>Trials</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td>${stats.mean ? stats.mean.toFixed(2) : 'N/A'} ms</td>
+                                        <td>${stats.std ? stats.std.toFixed(4) : 'N/A'} ms</td>
+                                        <td>${stats.min ? stats.min.toFixed(2) : 'N/A'} ms</td>
+                                        <td>${stats.max ? stats.max.toFixed(2) : 'N/A'} ms</td>
+                                        <td>${stats.num_trials || 'N/A'}</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    `;
+                }
             }
             
             html += '</div>';
@@ -289,7 +337,10 @@ class KernelBenchAPI {
             correctness: null,
             metadata: {},
             runtime: null,
-            runtime_stats: {}
+            runtime_stats: {},
+            ref_runtime: null,
+            ref_runtime_stats: {},
+            speedup: null
         };
 
         try {
@@ -318,10 +369,22 @@ class KernelBenchAPI {
                 }
             }
 
-            // Extract runtime (but not runtime_stats)
-            const runtimeMatch = str.match(/runtime=([\d.]+)(?=\s|$|runtime_stats)/);
+            // Extract runtime (but not runtime_stats, ref_runtime, or ref_runtime_stats)
+            const runtimeMatch = str.match(/\bruntime=([\d.]+)(?=\s|$|runtime_stats|ref_)/);
             if (runtimeMatch) {
                 result.runtime = parseFloat(runtimeMatch[1]);
+            }
+
+            // Extract ref_runtime
+            const refRuntimeMatch = str.match(/ref_runtime=([\d.]+)(?=\s|$|ref_runtime_stats)/);
+            if (refRuntimeMatch) {
+                result.ref_runtime = parseFloat(refRuntimeMatch[1]);
+            }
+
+            // Extract speedup
+            const speedupMatch = str.match(/speedup=([\d.]+)/);
+            if (speedupMatch) {
+                result.speedup = parseFloat(speedupMatch[1]);
             }
 
             // Extract runtime_stats - need to handle nested dictionary
@@ -359,6 +422,40 @@ class KernelBenchAPI {
                 }
             }
 
+            // Extract ref_runtime_stats
+            const refStatsStartIndex = str.indexOf('ref_runtime_stats={');
+            if (refStatsStartIndex !== -1) {
+                const refStatsStart = refStatsStartIndex + 'ref_runtime_stats='.length;
+                let braceCount = 0;
+                let refStatsEnd = refStatsStart;
+                
+                // Find the matching closing brace
+                for (let i = refStatsStart; i < str.length; i++) {
+                    if (str[i] === '{') braceCount++;
+                    if (str[i] === '}') {
+                        braceCount--;
+                        if (braceCount === 0) {
+                            refStatsEnd = i + 1;
+                            break;
+                        }
+                    }
+                }
+                
+                if (refStatsEnd > refStatsStart) {
+                    const refStatsStr = str.substring(refStatsStart, refStatsEnd)
+                        .replace(/'/g, '"')
+                        .replace(/\bNone\b/g, 'null')
+                        .replace(/\bTrue\b/g, 'true')
+                        .replace(/\bFalse\b/g, 'false');
+                    
+                    try {
+                        result.ref_runtime_stats = JSON.parse(refStatsStr);
+                    } catch (e) {
+                        console.error('Error parsing ref_runtime_stats:', e, 'String was:', refStatsStr);
+                    }
+                }
+            }
+
         } catch (error) {
             console.error('Error parsing eval string:', error);
         }
@@ -392,10 +489,11 @@ class KernelBenchAPI {
 
             const createdAt = new Date(request.created_at).toLocaleString();
             
-            // Parse eval_result to extract compiled, correctness, and runtime
+            // Parse eval_result to extract compiled, correctness, runtime, and speedup
             let compiled = '-';
             let correctness = '-';
             let runtime = '-';
+            let speedup = '-';
             
             if (request.eval_result && request.status === 'completed') {
                 try {
@@ -416,6 +514,11 @@ class KernelBenchAPI {
                     if (evalData.runtime !== null) {
                         runtime = evalData.runtime.toFixed(2);
                     }
+                    
+                    if (evalData.speedup !== null && evalData.speedup > 0) {
+                        const speedupClass = evalData.speedup > 1 ? 'text-success fw-bold' : evalData.speedup < 1 ? 'text-warning' : '';
+                        speedup = `<span class="${speedupClass}">${evalData.speedup.toFixed(2)}x</span>`;
+                    }
                 } catch (e) {
                     console.error('Error parsing eval_result for table:', e);
                 }
@@ -429,6 +532,7 @@ class KernelBenchAPI {
                 <td>${compiled}</td>
                 <td>${correctness}</td>
                 <td>${runtime}</td>
+                <td>${speedup}</td>
                 <td>${createdAt}</td>
                 <td>
                     <button class="btn btn-sm btn-outline-primary" onclick="api.viewRequest('${request.id}')">

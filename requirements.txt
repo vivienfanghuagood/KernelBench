@@ -25,4 +25,5 @@ google-generativeai
 together
 openai
 anthropic
+pydantic==2.12.4
 

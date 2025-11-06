@@ -76,6 +76,8 @@ def set_gpu_arch(arch_list: list[str]):
     """
     Set env variable for torch cuda arch list to build kernels for specified architectures
     """
+    return
+    import pdb;pdb.set_trace()
     valid_archs = ["Maxwell", "Pascal", "Volta", "Turing", "Ampere", "Hopper", "Ada"]
     for arch in arch_list:
         if arch not in valid_archs:

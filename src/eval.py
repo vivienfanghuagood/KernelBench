@@ -1,7 +1,6 @@
 """
 Helpers for Evaluations
 """
-
 import hashlib
 import importlib
 import json
@@ -19,9 +18,12 @@ import numpy as np
 import requests
 import torch
 import torch.nn as nn
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from . import utils
+
+
+
 
 REPO_TOP_PATH = os.path.abspath(
     os.path.join(
@@ -105,20 +107,32 @@ def load_original_model_and_inputs(
     Load class from original NN.module pytorch code
     this is pytorch reference and we feed that to model to see if there will be any improvement
     """
-
+    fake_filename = f"<original_model_{id(model_original_src)}>"
+    
     try:
-        compile(model_original_src, "<string>", "exec")
+        lines = model_original_src.splitlines(keepends=True)
+        linecache.cache[fake_filename] = (
+            len(model_original_src),
+            None,
+            lines,
+            fake_filename,
+        )
+        
+        code_obj = compile(model_original_src, fake_filename, "exec")
     except SyntaxError as e:
         print(f"Syntax Error in original code {e}")
+        if fake_filename in linecache.cache:
+            del linecache.cache[fake_filename]
         return None
 
     try:
-        exec(model_original_src, context)  # expose to current namespace
+        exec(code_obj, context)
     except Exception as e:
         print(f"Error in executing original code {e}")
+        if fake_filename in linecache.cache:
+            del linecache.cache[fake_filename]
         return None
 
-    # these should be defined in the original model code and present in the context
     get_init_inputs_fn = context.get("get_init_inputs")
     get_inputs_fn = context.get("get_inputs")
     Model = context.get("Model")
@@ -202,18 +216,33 @@ def load_custom_model(
     """
     if build_directory:
         context["BUILD_DIRECTORY"] = build_directory
-        # Add import at the start of the source code
         model_custom_src = (
             "import os\n" f"os.environ['TORCH_EXTENSIONS_DIR'] = '{build_directory}'\n"
         ) + model_custom_src
 
+    fake_filename = f"<generated_model_{id(model_custom_src)}>"
+    
     try:
-        compile(model_custom_src, "<string>", "exec")
-        exec(model_custom_src, context)
-        # DANGER: need to delete refernece from global namespace
+        lines = model_custom_src.splitlines(keepends=True)
+        linecache.cache[fake_filename] = (
+            len(model_custom_src),
+            None,
+            lines,
+            fake_filename,
+        )
+        
+        code_obj = compile(model_custom_src, fake_filename, "exec")
+        exec(code_obj, context)
     except SyntaxError as e:
         print(f"Syntax Error in custom generated code or Compilation Error {e}")
+        if fake_filename in linecache.cache:
+            del linecache.cache[fake_filename]
         return None
+    except Exception as e:
+        print(f"Error executing custom model: {e}")
+        if fake_filename in linecache.cache:
+            del linecache.cache[fake_filename]
+        raise
 
     ModelNew = context.get("ModelNew")
     return ModelNew
@@ -238,23 +267,21 @@ def graceful_eval_cleanup(
 ):
     """
     Clean up env, gpu cache, and compiled CUDA extensions after evaluation
-    """  # delete ran-specific function definitions before next eval run
+    """
+    fake_filenames = [k for k in linecache.cache.keys() if k.startswith(("<generated_model_", "<original_model_"))]
+    for fname in fake_filenames:
+        del linecache.cache[fname]
+    
     del curr_context
-    # Clear CUDA cache and reset GPU state
+    
     with torch.cuda.device(device):
         torch.cuda.empty_cache()
-
-        # does this help?
         torch.cuda.reset_peak_memory_stats(device=device)
-
-        torch.cuda.synchronize(
-            device=device
-        )  # Wait for all CUDA operations to complete
+        torch.cuda.synchronize(device=device)
+    
     if tempfile:
         tempfile.close()
         os.remove(tempfile.name)
-
-    # _cleanup_cuda_extensions() # SIMON NOTE: is this necessary?
 
 
 def build_compile_cache_legacy(

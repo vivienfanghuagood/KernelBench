@@ -165,12 +165,12 @@ class KernelBenchAPI {
 
     showResults(status) {
         const resultsSection = document.getElementById('resultsSection');
-        const refArchDisplay = document.getElementById('refArchDisplay');
+        const refArchSrc = document.getElementById('refArchSrc');
         const generatedKernel = document.getElementById('generatedKernel');
         const evalResults = document.getElementById('evalResults');
 
-        // Display reference architecture
-        refArchDisplay.textContent = status.ref_arch_src || 'No reference code';
+        // Display reference architecture back in the input textarea
+        refArchSrc.value = status.ref_arch_src || 'No reference code';
         
         // Display generated kernel
         generatedKernel.textContent = status.generated_kernel || 'No kernel generated';
@@ -392,11 +392,43 @@ class KernelBenchAPI {
 
             const createdAt = new Date(request.created_at).toLocaleString();
             
+            // Parse eval_result to extract compiled, correctness, and runtime
+            let compiled = '-';
+            let correctness = '-';
+            let runtime = '-';
+            
+            if (request.eval_result && request.status === 'completed') {
+                try {
+                    const evalData = this.parseEvalString(request.eval_result);
+                    
+                    if (evalData.compiled !== null) {
+                        compiled = evalData.compiled 
+                            ? '<span class="badge bg-success">✓</span>' 
+                            : '<span class="badge bg-danger">✗</span>';
+                    }
+                    
+                    if (evalData.correctness !== null) {
+                        correctness = evalData.correctness 
+                            ? '<span class="badge bg-success">✓</span>' 
+                            : '<span class="badge bg-danger">✗</span>';
+                    }
+                    
+                    if (evalData.runtime !== null) {
+                        runtime = evalData.runtime.toFixed(2);
+                    }
+                } catch (e) {
+                    console.error('Error parsing eval_result for table:', e);
+                }
+            }
+            
             row.innerHTML = `
                 <td><code>${request.id.substring(0, 8)}...</code></td>
                 <td><span class="badge bg-${statusClass}">${request.status}</span></td>
                 <td>${request.backend}</td>
                 <td>${request.model_name}</td>
+                <td>${compiled}</td>
+                <td>${correctness}</td>
+                <td>${runtime}</td>
                 <td>${createdAt}</td>
                 <td>
                     <button class="btn btn-sm btn-outline-primary" onclick="api.viewRequest('${request.id}')">

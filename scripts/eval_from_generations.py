@@ -30,8 +30,11 @@ from src.eval import (
 from src.utils import read_file, set_gpu_arch
 from tqdm import tqdm
 
-# Modal support
-import modal
+import warnings
+warnings.filterwarnings("ignore", message=".*protected namespace.*")
+warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
+warnings.filterwarnings("ignore", category=UserWarning, module="pydantic._internal._fields")
+
 
 """
 Batch Evaluation from Existing Generations
@@ -51,45 +54,119 @@ KERNEL_BENCH_PATH = os.path.join(REPO_TOP_DIR, "KernelBench")
 
 torch.set_printoptions(precision=4, threshold=10)
 
-# Modal Infrastructure Setup
-app = modal.App("eval_from_generations_modal")
+# GPU architecture mapping for Modal
 gpu_arch_mapping = {"L40S": ["Ada"], "H100": ["Hopper"], "A100": ["Ampere"], "L4": ["Ada"], "T4": ["Turing"], "A10G": ["Ampere"]}
 
-cuda_version = "12.4.0"  # should be no greater than host CUDA version
-flavor = "devel"  #  includes full CUDA toolkit
-operating_sys = "ubuntu22.04"
-tag = f"{cuda_version}-{flavor}-{operating_sys}"
+# Modal Infrastructure Setup - only initialized when needed
+modal = None
+app = None
+image = None
+ModalEvaluator = None
 
-image = (
-    modal.Image.from_registry(f"nvidia/cuda:{tag}", add_python="3.10")
-    .apt_install("git",
-                "gcc-10",
-                "g++-10",
-                "clang"
+def init_modal():
+    """Initialize Modal infrastructure only when eval_mode='modal'"""
+    global modal, app, image, ModalEvaluator
+    
+    if modal is not None:
+        return  # Already initialized
+    
+    import modal as modal_module
+    modal = modal_module
+    
+    app = modal.App("eval_from_generations_modal")
+    
+    cuda_version = "12.4.0"
+    flavor = "devel"
+    operating_sys = "ubuntu22.04"
+    tag = f"{cuda_version}-{flavor}-{operating_sys}"
+    
+    image = (
+        modal.Image.from_registry(f"nvidia/cuda:{tag}", add_python="3.10")
+        .apt_install("git", "gcc-10", "g++-10", "clang")
+        .pip_install(
+            "anthropic",
+            "numpy",
+            "openai",
+            "packaging",
+            "pydra_config",
+            "torch==2.5.0",
+            "tqdm",
+            "datasets",
+            "transformers",
+            "google-generativeai",
+            "together",
+            "pytest",
+            "ninja",
+            "utils",
+            "python-dotenv",
+        )
+        .add_local_dir(KERNEL_BENCH_PATH, remote_path="/root/KernelBench")
+        .add_local_python_source("src")
+    )
+    
+    # Define ModalEvaluator class
+    @app.cls(
+        image=image,
+        gpu="A10G",
+        retries=modal.Retries(
+            max_retries=3,
+            backoff_coefficient=2.0,
+            initial_delay=1.0,
+        )
+    )
+    @modal.concurrent(max_inputs=1)
+    class ModalEvaluatorCls:
+        
+        @modal.method()
+        def evaluate_single_sample_modal(
+            self,
+            ref_arch_src: str,
+            kernel_src: str,
+            gpu_arch: list[str],
+            num_correct_trials: int = 5,
+            num_perf_trials: int = 100,
+            measure_performance: bool = True,
+            verbose: bool = False,
+        ):
+            """Evaluate a single sample on Modal GPU"""
+            from src.eval import eval_kernel_against_ref
+            from src.utils import set_gpu_arch
+            import torch
+            import time
+            
+            max_wait_time = 30
+            start_time = time.time()
+            gpu_available = False
+            
+            while time.time() - start_time < max_wait_time:
+                if torch.cuda.is_available():
+                    gpu_available = True
+                    break
+                wait_time = min(0.5 * (2 ** int((time.time() - start_time) / 2)), 8.0)
+                time.sleep(wait_time)
+            
+            if not gpu_available:
+                raise RuntimeError(
+                    f"GPU not attached to container after {max_wait_time}s - Modal will retry with new container"
                 )
-    .pip_install(
-        "anthropic",
-        "numpy",
-        "openai",
-        "packaging",
-        "pydra_config",
-        "torch==2.5.0",
-        "tqdm",
-        "datasets",
-        "transformers",
-        "google-generativeai",
-        "together",
-        "pytest",
-        "ninja",
-        "utils",
-        "python-dotenv",
-    )
-    .add_local_dir(
-        KERNEL_BENCH_PATH,
-        remote_path="/root/KernelBench"
-    )
-    .add_local_python_source("src")
-)
+            
+            set_gpu_arch(gpu_arch)
+            
+            result = eval_kernel_against_ref(
+                original_model_src=ref_arch_src,
+                custom_model_src=kernel_src,
+                measure_performance=measure_performance,
+                verbose=verbose,
+                num_correct_trials=num_correct_trials,
+                num_perf_trials=num_perf_trials,
+                build_dir=None,
+                device=torch.device("cuda:0"),
+            )
+            
+            torch.cuda.empty_cache()
+            return result
+    
+    ModalEvaluator = ModalEvaluatorCls
 
 
 class EvalConfig(Config):
@@ -112,10 +189,12 @@ class EvalConfig(Config):
         self.eval_mode = "local"
 
         # For Modal: GPU type to use (L40S, H100, A100, L4, T4, A10G)
+        # Only used when eval_mode="modal"
         self.gpu = "A10G"
 
-        # Construct this from mapping from architecture name to torch cuda arch list in the future
-        # you can either specify SM version or just use the name
+        # For Local: GPU architecture to compile for (e.g., ["Ada"], ["Ampere"], ["Hopper"])
+        # Only used when eval_mode="local"
+        # Common architectures: Ada (RTX 40 series), Ampere (RTX 30 series, A100), Hopper (H100)
         self.gpu_arch = ["Ada"]
 
         # Logging
@@ -160,77 +239,6 @@ class WorkArgs:
     problem_id: int
     sample_id: int
     device: torch.device
-
-
-# Modal Evaluation Class
-# GPU must be specified here for all instances
-# Retries are configured at the class level to handle GPU attachment failures
-# @modal.concurrent: Each container handles exactly ONE evaluation at a time - prevents memory leaks
-@app.cls(
-    image=image, 
-    gpu="A10G",
-    retries=modal.Retries(
-        max_retries=3,
-        backoff_coefficient=2.0,
-        initial_delay=1.0,
-    )
-)
-@modal.concurrent(max_inputs=1)  # One input per container - prevents GPU memory leaks
-class ModalEvaluator:
-    
-    @modal.method()
-    def evaluate_single_sample_modal(
-        self,
-        ref_arch_src: str,
-        kernel_src: str,
-        gpu_arch: list[str],
-        num_correct_trials: int = 5,
-        num_perf_trials: int = 100,
-        measure_performance: bool = True,
-        verbose: bool = False,
-    ):
-        """
-        Evaluate a single sample on Modal GPU with automatic retries for GPU attachment failures
-        """
-        from src.eval import eval_kernel_against_ref
-        from src.utils import set_gpu_arch
-        import torch
-        import time
-        
-        max_wait_time = 30
-        start_time = time.time()
-        gpu_available = False
-        
-        while time.time() - start_time < max_wait_time:
-            if torch.cuda.is_available():
-                gpu_available = True
-                break
-            # Progressive backoff: 0.5s, 1s, 2s, 4s, 8s...
-            wait_time = min(0.5 * (2 ** int((time.time() - start_time) / 2)), 8.0)
-            time.sleep(wait_time)
-        
-        if not gpu_available:
-            raise RuntimeError(
-                f"GPU not attached to container after {max_wait_time}s - Modal will retry with new container"
-            )
-        
-        set_gpu_arch(gpu_arch)
-        
-        result = eval_kernel_against_ref(
-            original_model_src=ref_arch_src,
-            custom_model_src=kernel_src,
-            measure_performance=measure_performance,
-            verbose=verbose,
-            num_correct_trials=num_correct_trials,
-            num_perf_trials=num_perf_trials,
-            build_dir=None,  # Modal doesn't need persistent build dir
-            device=torch.device("cuda:0"),  # Modal has one GPU per container
-        )
-        
-        # Force cleanup and exit to prevent container reuse and memory leaks
-        torch.cuda.empty_cache()
-        
-        return result  # Never reached, but needed for type checking
 
 
 def fetch_ref_arch_from_problem_id(
@@ -352,36 +360,6 @@ def evaluate_single_sample(
             return eval_result
 
 
-def evaluate_single_sample_modal_direct(
-    problem_id: int,
-    sample_id: int,
-    ref_arch_src: str,
-    kernel_src: str,
-    gpu: str,
-    configs: EvalConfig,
-):
-    """
-    Evaluate a single sample using Modal
-    """
-    gpu_arch = gpu_arch_mapping.get(gpu, ["Ada"])
-    
-    try:
-        evaluator = ModalEvaluator()
-        eval_result = evaluator.evaluate_single_sample_modal.remote(
-            ref_arch_src=ref_arch_src,
-            kernel_src=kernel_src,
-            gpu_arch=gpu_arch,
-            num_correct_trials=configs.num_correct_trials,
-            num_perf_trials=configs.num_perf_trials,
-            measure_performance=configs.measure_performance,
-            verbose=configs.verbose,
-        )
-        return eval_result
-    except Exception as e:
-        print(f"[ERROR] Modal evaluation failed for problem {problem_id} sample {sample_id}: {e}")
-        return None
-
-
 def cuda_single_eval_wrapper(curr_work: WorkArgs, configs: dict, dataset, run_dir: str):
     """
     Wrapper to handle timeout and keyboard interrupt
@@ -435,6 +413,9 @@ def batch_eval_modal(
     run_dir: str,
     eval_file_path: str,
 ):
+    # Initialize Modal infrastructure if not already done
+    init_modal()
+    
     print(f"[Modal] Starting batch evaluation on {config.gpu} GPUs")
     print(f"[Modal] Processing {len(total_work)} samples in parallel batches of {config.num_gpu_devices}")
     
@@ -726,10 +707,16 @@ def main(config: EvalConfig):
     """
     print(f"Starting Batch Eval with config: {config}")
 
-    # Check if CUDA is available (only for local mode)
+    # Validate eval_mode and GPU configuration
     if config.eval_mode == "local":
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA device not available. Local evaluation requires GPU.")
+        
+        # Validate that gpu parameter is not a cloud GPU type when using local mode
+        if config.gpu in gpu_arch_mapping:
+            print(f"[WARNING] You specified gpu='{config.gpu}' which is a Modal GPU type, but eval_mode='local'.")
+            print(f"[INFO] For local evaluation, please set gpu_arch directly (e.g., gpu_arch=['Ampere']).")
+            print(f"[INFO] Proceeding with local evaluation using gpu_arch={config.gpu_arch}")
         
         # set GPU arch to configure what target to build for
         set_gpu_arch(config.gpu_arch)
@@ -737,7 +724,13 @@ def main(config: EvalConfig):
             config.num_gpu_devices <= torch.cuda.device_count()
         ), f"Number of GPUs requested ({config.num_gpu_devices}) is greater than the number of available GPUs ({torch.cuda.device_count()})"
     else:
-        print(f"[Modal] Using Modal for evaluation with GPU: {config.gpu}")
+        # Initialize Modal for cloud evaluation
+        print(f"[Modal] Initializing Modal infrastructure for GPU: {config.gpu}")
+        init_modal()
+        
+        # Validate that the specified GPU is supported by Modal
+        if config.gpu not in gpu_arch_mapping:
+            raise ValueError(f"GPU type '{config.gpu}' not supported. Must be one of: {list(gpu_arch_mapping.keys())}")
 
     if mp.get_start_method(allow_none=True) is None:
         mp.set_start_method("spawn")

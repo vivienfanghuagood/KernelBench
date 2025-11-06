@@ -17,6 +17,8 @@ app.mount("/static", StaticFiles(directory="api/static"), name="static")
 templates = Jinja2Templates(directory="api/templates")
 
 class GenerationRequest(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
     ref_arch_src: str
     gpu_arch: List[str] = ["4090"]
     backend: str = "triton"
@@ -26,11 +28,15 @@ class GenerationRequest(BaseModel):
     temperature: float = 0.0
 
 class GenerationResponse(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
     request_id: str
     status: str
     message: str
 
 class StatusResponse(BaseModel):
+    model_config = {"protected_namespaces": ()}
+    
     request_id: str
     status: str
     ref_arch_src: Optional[str]

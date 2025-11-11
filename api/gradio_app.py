@@ -26,9 +26,10 @@ class KernelBenchGradioApp:
             print(f"Error loading samples: {e}")
             return ["-- Select a sample to load --"]
     
-    def load_sample_content(self, sample_selection: str) -> str:
+    def load_sample_content(self, sample_selection: str) -> Tuple[str, str]:
+        """Load sample content and return both content and problem name"""
         if sample_selection == "-- Select a sample to load --":
-            return ""
+            return ("", "")
         
         try:
             if sample_selection.startswith("[level1]"):
@@ -38,16 +39,18 @@ class KernelBenchGradioApp:
                 level = "level2"
                 name = sample_selection[9:].strip()
             else:
-                return ""
+                return ("", "")
             
             filename = name + ".py"
             response = requests.get(f"{self.api_base_url}/api/samples/{level}/{filename}")
             if response.ok:
                 data = response.json()
-                return data.get("content", "")
-            return ""
+                content = data.get("content", "")
+                # Return content and the problem name (without .py extension)
+                return (content, name)
+            return ("", "")
         except Exception as e:
-            return f"Error loading sample: {str(e)}"
+            return (f"Error loading sample: {str(e)}", "")
     
     def update_model_name(self, server_type: str) -> str:
         model_map = {
@@ -67,6 +70,8 @@ class KernelBenchGradioApp:
         gpu_arch: str,
         max_tokens: int,
         temperature: float,
+        custom_prompt: str,
+        problem_name: str,
         progress=gr.Progress()
     ) -> Tuple[str, str, str, str]:
         if not ref_arch_src or not ref_arch_src.strip():
@@ -80,7 +85,9 @@ class KernelBenchGradioApp:
                 "model_name": model_name,
                 "server_type": server_type,
                 "max_tokens": int(max_tokens),
-                "temperature": float(temperature)
+                "temperature": float(temperature),
+                "custom_prompt": custom_prompt if custom_prompt and custom_prompt.strip() else None,
+                "problem_name": problem_name if problem_name and problem_name.strip() else None
             }
             
             response = requests.post(
@@ -299,9 +306,12 @@ class KernelBenchGradioApp:
         
         return result
     
-    def load_request_history(self, limit: int = 10) -> Tuple[List[List[Any]], List[str]]:
+    def load_request_history(self, limit: int = None) -> Tuple[List[List[Any]], List[str]]:
         try:
-            response = requests.get(f"{self.api_base_url}/api/requests?limit={limit}")
+            # Request all records by setting a very high limit
+            # The API will return all available requests
+            url = f"{self.api_base_url}/api/requests?limit=10000"
+            response = requests.get(url)
             if not response.ok:
                 return ([], [])
             
@@ -445,6 +455,15 @@ class KernelBenchGradioApp:
                                 max_lines=20
                             )
                             
+                            custom_prompt_input = gr.Textbox(
+                                label="Custom Prompt (Optional)",
+                                placeholder="Add custom instructions to append to the generation prompt...",
+                                lines=3,
+                                max_lines=5
+                            )
+                            
+                            problem_name_state = gr.State("")
+                            
                             with gr.Row():
                                 backend = gr.Dropdown(
                                     choices=["cuda", "triton", "cute"],
@@ -508,7 +527,7 @@ class KernelBenchGradioApp:
                     sample_dropdown.change(
                         fn=self.load_sample_content,
                         inputs=[sample_dropdown],
-                        outputs=[ref_arch_src]
+                        outputs=[ref_arch_src, problem_name_state]
                     )
                     
                     server_type.change(
@@ -521,26 +540,19 @@ class KernelBenchGradioApp:
                         fn=self.submit_generation,
                         inputs=[
                             ref_arch_src, backend, server_type, model_name,
-                            gpu_arch, max_tokens, temperature
+                            gpu_arch, max_tokens, temperature, custom_prompt_input, problem_name_state
                         ],
                         outputs=[generated_kernel, eval_results, status_msg, request_id_state]
                     )
                 
                 with gr.Tab("Request History"):
-                    gr.Markdown("### Recent Generation Requests")
+                    gr.Markdown("### All Generation Requests")
                     gr.Markdown("💡 **Tip:** Click on any row in the table to view its details below")
                     
                     request_ids_state = gr.State([])
                     
                     with gr.Row():
                         refresh_btn = gr.Button("🔄 Refresh", variant="secondary")
-                        limit_slider = gr.Slider(
-                            label="Number of requests",
-                            minimum=5,
-                            maximum=50,
-                            value=10,
-                            step=5
-                        )
                     
                     history_table = gr.Dataframe(
                         headers=["ID", "Status", "Backend", "Model", "Compiled", "Correct", "Runtime", "Speedup", "Created"],
@@ -575,19 +587,13 @@ class KernelBenchGradioApp:
                                 label="Evaluation Results"
                             )
                     
-                    def refresh_history(limit):
-                        table_data, req_ids = self.load_request_history(limit)
+                    def refresh_history():
+                        table_data, req_ids = self.load_request_history()
                         return table_data, req_ids
                     
                     refresh_btn.click(
                         fn=refresh_history,
-                        inputs=[limit_slider],
-                        outputs=[history_table, request_ids_state]
-                    )
-                    
-                    limit_slider.change(
-                        fn=refresh_history,
-                        inputs=[limit_slider],
+                        inputs=[],
                         outputs=[history_table, request_ids_state]
                     )
                     
@@ -599,7 +605,7 @@ class KernelBenchGradioApp:
                     
                     app.load(
                         fn=refresh_history,
-                        inputs=[limit_slider],
+                        inputs=[],
                         outputs=[history_table, request_ids_state]
                     )
             

@@ -35,6 +35,8 @@ class GenerationRequest(BaseModel):
     server_type: str = "openai"
     max_tokens: int = 4096
     temperature: float = 0.0
+    custom_prompt: Optional[str] = None
+    problem_name: Optional[str] = None
 
 class GenerationResponse(BaseModel):
     model_config = {"protected_namespaces": ()}
@@ -55,6 +57,8 @@ class StatusResponse(BaseModel):
     generated_kernel: Optional[str]
     eval_result: Optional[str]
     error_message: Optional[str]
+    custom_prompt: Optional[str]
+    problem_name: Optional[str]
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
@@ -102,7 +106,9 @@ async def create_generation_request(request: GenerationRequest, background_tasks
             model_name=request.model_name,
             server_type=request.server_type,
             max_tokens=request.max_tokens,
-            temperature=request.temperature
+            temperature=request.temperature,
+            custom_prompt=request.custom_prompt,
+            problem_name=request.problem_name
         )
         
         return GenerationResponse(
@@ -132,7 +138,9 @@ async def get_generation_status(request_id: str):
             completed_at=request_data['completed_at'],
             generated_kernel=request_data['generated_kernel'],
             eval_result=request_data['eval_result'],
-            error_message=request_data['error_message']
+            error_message=request_data['error_message'],
+            custom_prompt=request_data.get('custom_prompt'),
+            problem_name=request_data.get('problem_name')
         )
         
     except HTTPException:

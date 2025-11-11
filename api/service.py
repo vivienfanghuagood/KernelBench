@@ -70,6 +70,8 @@ def _worker_generate_kernel(request_id: str, repo_top_dir: str):
         server_type = request_data['server_type']
         max_tokens = request_data['max_tokens']
         temperature = request_data['temperature']
+        custom_prompt = request_data.get('custom_prompt', None)
+        problem_name = request_data.get('problem_name', None)
         
         # Set GPU architecture
         if gpu_arch:
@@ -87,20 +89,25 @@ def _worker_generate_kernel(request_id: str, repo_top_dir: str):
         
         # Generate prompt based on backend
         if backend == "cuda":
-            custom_prompt = prompt_generate_custom_cuda_from_prompt_template(ref_arch_src)
+            custom_prompt_template = prompt_generate_custom_cuda_from_prompt_template(ref_arch_src)
         elif backend in ["triton", "cute"]:
-            custom_prompt = get_prompt_for_backend(ref_arch_src, backend)
+            custom_prompt_template = get_prompt_for_backend(ref_arch_src, backend)
         else:
             raise ValueError(f"Unsupported backend: {backend}. Must be 'cuda', 'triton', or 'cute'.")
         
+        # Append custom prompt if provided
+        if custom_prompt and custom_prompt.strip():
+            custom_prompt_template = custom_prompt_template + "\n\n" + custom_prompt.strip()
+        
         # Generate kernel
-        custom_kernel = inference_server(custom_prompt)
+        custom_kernel = inference_server(custom_prompt_template)
         custom_kernel = extract_first_code(custom_kernel, ["python", "cpp"])
         
         if custom_kernel is None:
             raise ValueError(f"Custom {backend} kernel code generation failed")
         
         # Evaluate kernel (optional, can be made configurable)
+        eval_error_msg = None
         try:
             eval_result = eval_kernel_against_ref(
                 ref_arch_src,
@@ -112,15 +119,31 @@ def _worker_generate_kernel(request_id: str, repo_top_dir: str):
                 backend=backend,
             )
             eval_result_str = str(eval_result)
+            
+            # Extract error message if correctness is False
+            if not eval_result.correctness:
+                # Check for runtime_error_traceback or runtime_error in metadata
+                if 'runtime_error_traceback' in eval_result.metadata:
+                    eval_error_msg = eval_result.metadata['runtime_error_traceback']
+                elif 'runtime_error' in eval_result.metadata:
+                    eval_error_msg = eval_result.metadata['runtime_error']
+                elif 'compilation_error' in eval_result.metadata:
+                    eval_error_msg = eval_result.metadata['compilation_error']
+                else:
+                    # If no specific error, just note correctness failed
+                    eval_error_msg = f"Correctness check failed. Metadata: {eval_result.metadata}"
+                    
         except Exception as eval_error:
             eval_result_str = f"Evaluation failed: {str(eval_error)}"
+            eval_error_msg = traceback.format_exc()
         
         # Update request with results
         db.update_request_status(
             request_id, 
             GenerationStatus.COMPLETED,
             generated_kernel=custom_kernel,
-            eval_result=eval_result_str
+            eval_result=eval_result_str,
+            error_message=eval_error_msg
         )
         
     except Exception as e:
@@ -202,7 +225,9 @@ class KernelGenerationService:
                                 model_name: str,
                                 server_type: str,
                                 max_tokens: int = 4096,
-                                temperature: float = 0.0) -> str:
+                                temperature: float = 0.0,
+                                custom_prompt: str = None,
+                                problem_name: str = None) -> str:
         """Submit a new kernel generation request using multiprocessing"""
         # Clean up finished processes and check timeouts
         self._cleanup_finished_processes()
@@ -224,7 +249,9 @@ class KernelGenerationService:
             model_name=model_name,
             server_type=server_type,
             max_tokens=max_tokens,
-            temperature=temperature
+            temperature=temperature,
+            custom_prompt=custom_prompt,
+            problem_name=problem_name
         )
         
         # Start generation in separate process

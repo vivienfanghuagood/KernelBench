@@ -90,13 +90,15 @@ class KernelBenchAPI {
     async loadSelectedSample() {
         const sampleSelect = document.getElementById('sampleSelect');
         const refArchSrc = document.getElementById('refArchSrc');
+        const problemNameInput = document.getElementById('problemName');
         
         if (!sampleSelect || !refArchSrc) return;
         
         const selectedPath = sampleSelect.value;
         if (!selectedPath) {
-            // If empty option selected, clear the textarea
+            // If empty option selected, clear the textarea and problem name
             refArchSrc.value = '';
+            if (problemNameInput) problemNameInput.value = '';
             return;
         }
         
@@ -111,6 +113,12 @@ class KernelBenchAPI {
             
             const data = await response.json();
             refArchSrc.value = data.content;
+            
+            // Extract problem name (filename without .py extension)
+            const problemName = filename.replace('.py', '');
+            if (problemNameInput) {
+                problemNameInput.value = problemName;
+            }
             
         } catch (error) {
             this.showError('Failed to load sample: ' + error.message);
@@ -166,6 +174,9 @@ class KernelBenchAPI {
             selectedArches.push('4090'); // Default
         }
 
+        const customPrompt = document.getElementById('customPrompt')?.value.trim();
+        const problemName = document.getElementById('problemName')?.value.trim();
+
         return {
             ref_arch_src: refArchSrc,
             gpu_arch: selectedArches,
@@ -173,7 +184,9 @@ class KernelBenchAPI {
             model_name: document.getElementById('modelName').value,
             server_type: document.getElementById('serverType').value,
             max_tokens: parseInt(document.getElementById('maxTokens').value),
-            temperature: parseFloat(document.getElementById('temperature').value)
+            temperature: parseFloat(document.getElementById('temperature').value),
+            custom_prompt: customPrompt || null,
+            problem_name: problemName || null
         };
     }
 

@@ -40,6 +40,8 @@ class DatabaseManager:
                 server_type TEXT NOT NULL,
                 max_tokens INTEGER DEFAULT 4096,
                 temperature REAL DEFAULT 0.0,
+                custom_prompt TEXT,
+                problem_name TEXT,
                 status TEXT NOT NULL DEFAULT 'pending',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 started_at TIMESTAMP,
@@ -59,7 +61,9 @@ class DatabaseManager:
                                 model_name: str,
                                 server_type: str,
                                 max_tokens: int = 4096,
-                                temperature: float = 0.0) -> str:
+                                temperature: float = 0.0,
+                                custom_prompt: str = None,
+                                problem_name: str = None) -> str:
         """Create a new generation request and return the request ID"""
         request_id = str(uuid.uuid4())
         conn = self.get_connection()
@@ -67,10 +71,10 @@ class DatabaseManager:
         
         cursor.execute("""
             INSERT INTO generation_requests 
-            (id, ref_arch_src, gpu_arch, backend, model_name, server_type, max_tokens, temperature, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, ref_arch_src, gpu_arch, backend, model_name, server_type, max_tokens, temperature, custom_prompt, problem_name, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (request_id, ref_arch_src, json.dumps(gpu_arch), backend, model_name, 
-              server_type, max_tokens, temperature, GenerationStatus.PENDING.value))
+              server_type, max_tokens, temperature, custom_prompt, problem_name, GenerationStatus.PENDING.value))
         
         conn.commit()
         return request_id

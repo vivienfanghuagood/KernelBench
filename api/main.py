@@ -6,11 +6,20 @@ from pydantic import BaseModel
 from typing import List, Optional
 import uvicorn
 import os
+import atexit
 
 from api.service import kernel_service
 from api.database import GenerationStatus
 
 app = FastAPI(title="KernelBench API", description="API for generating and evaluating GPU kernels", version="1.0.0")
+
+# Register cleanup on shutdown
+atexit.register(kernel_service.cleanup_all_processes)
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on shutdown"""
+    kernel_service.cleanup_all_processes()
 
 # Mount static files and templates
 app.mount("/static", StaticFiles(directory="api/static"), name="static")
@@ -197,7 +206,36 @@ async def get_sample_content(level: str, filename: str):
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    return {"status": "healthy", "message": "KernelBench API is running"}
+    active_workers = kernel_service.get_active_workers_count()
+    max_workers = kernel_service.max_workers
+    return {
+        "status": "healthy", 
+        "message": "KernelBench API is running",
+        "active_workers": active_workers,
+        "max_workers": max_workers,
+        "capacity_remaining": max_workers - active_workers
+    }
+
+@app.delete("/api/generate/{request_id}")
+async def terminate_generation(request_id: str):
+    """Terminate a running generation request"""
+    success = kernel_service.terminate_request(request_id)
+    if success:
+        return {"status": "terminated", "request_id": request_id}
+    else:
+        raise HTTPException(status_code=404, detail="Request not found or already completed")
+
+@app.get("/api/workers")
+async def get_workers_info():
+    """Get information about active workers"""
+    active_workers = kernel_service.get_active_workers_count()
+    max_workers = kernel_service.max_workers
+    return {
+        "active_workers": active_workers,
+        "max_workers": max_workers,
+        "capacity_remaining": max_workers - active_workers,
+        "utilization": f"{(active_workers / max_workers * 100):.1f}%"
+    }
 
 if __name__ == "__main__":
     uvicorn.run(

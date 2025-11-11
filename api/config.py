@@ -7,7 +7,7 @@ class APIConfig:
     """Configuration for the API service"""
     
     # Multiprocessing settings
-    MAX_WORKERS = int(os.getenv("KERNELBENCH_MAX_WORKERS", "1"))
+    MAX_WORKERS = int(os.getenv("KERNELBENCH_MAX_WORKERS", "4"))
     WORKER_TIMEOUT = int(os.getenv("KERNELBENCH_WORKER_TIMEOUT", "300"))  # 5 minutes
     
     # Core dump settings (Linux only)

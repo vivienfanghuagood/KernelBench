@@ -332,6 +332,7 @@ class KernelBenchGradioApp:
                 status = req.get("status", "unknown")
                 backend = req.get("backend", "-")
                 model_name = req.get("model_name", "-")
+                problem_name = req.get("problem_name", "-")
                 created_at = req.get("created_at", "")
                 
                 compiled = "-"
@@ -376,6 +377,7 @@ class KernelBenchGradioApp:
                     f"{status_emoji} {status}",
                     backend,
                     model_name,
+                    problem_name,
                     compiled,
                     correctness,
                     runtime,
@@ -389,14 +391,14 @@ class KernelBenchGradioApp:
             print(f"Error loading history: {e}")
             return ([], [])
     
-    def view_request_by_id(self, request_id: str) -> Tuple[str, str, str, str]:
+    def view_request_by_id(self, request_id: str) -> Tuple[str, str, str, str, str]:
         if not request_id or not request_id.strip():
-            return ("", "", "", "⚠️ Please enter a request ID")
+            return ("", "", "", "", "⚠️ Please enter a request ID")
         
         try:
             response = requests.get(f"{self.api_base_url}/api/status/{request_id}")
             if not response.ok:
-                return ("", "", "", f"❌ Request not found: {request_id}")
+                return ("", "", "", "", f"❌ Request not found: {request_id}")
             
             status_data = response.json()
             status = status_data.get("status")
@@ -405,26 +407,27 @@ class KernelBenchGradioApp:
                 ref_code = status_data.get("ref_arch_src", "No reference code")
                 generated_kernel = status_data.get("generated_kernel", "No kernel generated")
                 eval_result = self.format_eval_results(status_data.get("eval_result", ""))
+                error_message = status_data.get("error_message", "")
                 msg = f"✅ Request `{request_id[:12]}...` loaded successfully"
-                return (ref_code, generated_kernel, eval_result, msg)
+                return (ref_code, generated_kernel, eval_result, error_message, msg)
             elif status == "failed":
                 error_msg = status_data.get("error_message", "Unknown error")
-                return ("", "", "", f"❌ Request failed: {error_msg}")
+                return ("", "", "", error_msg, f"❌ Request failed: {error_msg}")
             else:
-                return ("", "", "", f"⏳ Request is still {status}")
+                return ("", "", "", "", f"⏳ Request is still {status}")
                 
         except Exception as e:
-            return ("", "", "", f"❌ Error: {str(e)}")
+            return ("", "", "", "", f"❌ Error: {str(e)}")
     
-    def view_request_from_table(self, history_table_data: gr.SelectData, request_ids_state: List[str]) -> Tuple[str, str, str, str]:
+    def view_request_from_table(self, history_table_data: gr.SelectData, request_ids_state: List[str]) -> Tuple[str, str, str, str, str]:
         try:
             row_index = history_table_data.index[0]
             if row_index < len(request_ids_state):
                 request_id = request_ids_state[row_index]
                 return self.view_request_by_id(request_id)
-            return ("", "", "", "⚠️ Invalid selection")
+            return ("", "", "", "", "⚠️ Invalid selection")
         except Exception as e:
-            return ("", "", "", f"❌ Error: {str(e)}")
+            return ("", "", "", "", f"❌ Error: {str(e)}")
     
     def create_interface(self) -> gr.Blocks:
         with gr.Blocks(title="KernelBench - GPU Kernel Generator", theme=gr.themes.Soft()) as app:
@@ -555,8 +558,8 @@ class KernelBenchGradioApp:
                         refresh_btn = gr.Button("🔄 Refresh", variant="secondary")
                     
                     history_table = gr.Dataframe(
-                        headers=["ID", "Status", "Backend", "Model", "Compiled", "Correct", "Runtime", "Speedup", "Created"],
-                        datatype=["str", "str", "str", "str", "str", "str", "str", "str", "str"],
+                        headers=["ID", "Status", "Backend", "Model", "Problem", "Compiled", "Correct", "Runtime", "Speedup", "Created"],
+                        datatype=["str", "str", "str", "str", "str", "str", "str", "str", "str", "str"],
                         value=[],
                         interactive=False,
                         wrap=True
@@ -586,6 +589,15 @@ class KernelBenchGradioApp:
                             view_eval_output = gr.Markdown(
                                 label="Evaluation Results"
                             )
+                        
+                        with gr.Tab("Error Message"):
+                            view_error_message = gr.Textbox(
+                                label="Error Details",
+                                lines=12,
+                                max_lines=20,
+                                interactive=False,
+                                placeholder="No error message available"
+                            )
                     
                     def refresh_history():
                         table_data, req_ids = self.load_request_history()
@@ -600,7 +612,7 @@ class KernelBenchGradioApp:
                     history_table.select(
                         fn=self.view_request_from_table,
                         inputs=[request_ids_state],
-                        outputs=[view_ref_code, view_kernel_output, view_eval_output, view_status_msg]
+                        outputs=[view_ref_code, view_kernel_output, view_eval_output, view_error_message, view_status_msg]
                     )
                     
                     app.load(

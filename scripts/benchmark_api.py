@@ -15,7 +15,24 @@ from pathlib import Path
 import csv
 import argparse
 
-
+CUSTOM_PROMPT = """
+### **Important Constraints**
+1. **Allowed math functions:** `exp`, `log`, `sqrt`, `rsqrt`, `sin`, `cos`, `sigmoid`, `softmax`, `relu`, `gelu`, `tanh` *(implemented manually if needed, not via `tl.tanh`)*.  
+2. **Disallowed / Missing APIs:**  
+   - ❌ `tl.tanh`, `tl.astype`, `tl.floor_div`, `tl.floor_divide`, `tl.full_like`  
+   - ❌ `tl.sum(where=...)` — Triton `tl.sum` does **not** support `where`.  
+   - ❌ `program_id(axis=3)` — Triton supports only 3D grids (axes 0,1,2).  
+3. **Substitutions:**  
+   - Use `tl.math.tanh(x)` → replace with `(tl.exp(2*x) - 1) / (tl.exp(2*x) + 1)`  
+   - Replace `.astype()` with `.to(dtype)`  
+   - Replace floor division with: `tl.math.floor(x / y)`  
+   - Replace `tl.full_like(x, v)` with `tl.zeros_like(x) + v`  
+4. **Memory & typing rules:**  
+   - `tl.store` target must be a scalar or contiguous pointer; block tensors cannot be stored directly.  
+   - `tl.arange` arguments must be **compile-time constexpr**.  
+5. Ensure the generated kernel compiles without syntax errors or undefined functions. 
+6. **Shared memory per block ≤ **65536 bytes**.  
+"""
 class BenchmarkRunner:
     def __init__(self, api_base_url: str = "http://localhost:8009"):
         self.api_base_url = api_base_url
@@ -52,7 +69,9 @@ class BenchmarkRunner:
         model_name: str = "gpt-5",
         server_type: str = "openai",
         max_tokens: int = 4096,
-        temperature: float = 1.0
+        temperature: float = 0.0,
+        custom_prompt: Optional[str] = None,
+        problem_name: Optional[str] = None
     ) -> Optional[str]:
         """Submit a generation request and return request_id"""
         try:
@@ -63,7 +82,9 @@ class BenchmarkRunner:
                 "model_name": model_name,
                 "server_type": server_type,
                 "max_tokens": max_tokens,
-                "temperature": temperature
+                "temperature": temperature,
+                "custom_prompt": custom_prompt if custom_prompt and custom_prompt.strip() else None,
+                "problem_name": problem_name if problem_name and problem_name.strip() else None
             }
             
             response = requests.post(
@@ -88,7 +109,7 @@ class BenchmarkRunner:
         self, 
         request_id: str, 
         max_wait_time: int = 600,
-        poll_interval: int = 2
+        poll_interval: int = 20
     ) -> Optional[Dict[str, Any]]:
         """Wait for a request to complete and return the status data"""
         start_time = time.time()
@@ -234,7 +255,8 @@ class BenchmarkRunner:
         model_name: str = "gpt-5",
         server_type: str = "openai",
         max_tokens: int = 4096,
-        temperature: float = 1.0
+        temperature: float = 0.0,
+        custom_prompt: Optional[str] = None
     ) -> Dict[str, Any]:
         """Process a single sample and return the results"""
         print(f"\n{'='*80}")
@@ -249,6 +271,7 @@ class BenchmarkRunner:
             "gpu_arch": gpu_arch,
             "model_name": model_name,
             "server_type": server_type,
+            "custom_prompt": custom_prompt,
             "timestamp": datetime.now().isoformat(),
             "request_id": None,
             "status": "failed",
@@ -274,7 +297,7 @@ class BenchmarkRunner:
         
         start_time = time.time()
         
-        # Submit request
+        # Submit request (use sample name as problem_name)
         request_id = self.submit_generation_request(
             ref_arch_src=sample['content'],
             backend=backend,
@@ -282,7 +305,9 @@ class BenchmarkRunner:
             model_name=model_name,
             server_type=server_type,
             max_tokens=max_tokens,
-            temperature=temperature
+            temperature=temperature,
+            custom_prompt=custom_prompt,
+            problem_name=sample['name']  # Use sample name as problem_name
         )
         
         if not request_id:
@@ -363,7 +388,8 @@ class BenchmarkRunner:
         model_name: str = "gpt-5",
         server_type: str = "openai",
         max_tokens: int = 4096,
-        temperature: float = 1.0,
+        temperature: float = 0.0,
+        custom_prompt: Optional[str] = None,
         output_dir: str = "results/benchmark",
         start_from: Optional[str] = None,
         limit: Optional[int] = None
@@ -374,6 +400,8 @@ class BenchmarkRunner:
         print(f"   GPU Arch: {gpu_arch}")
         print(f"   Model: {model_name}")
         print(f"   Server: {server_type}")
+        if custom_prompt:
+            print(f"   Custom Prompt: {custom_prompt[:50]}..." if len(custom_prompt) > 50 else f"   Custom Prompt: {custom_prompt}")
         
         # Load all samples
         print("\n📂 Loading samples...")
@@ -416,7 +444,8 @@ class BenchmarkRunner:
                 model_name=model_name,
                 server_type=server_type,
                 max_tokens=max_tokens,
-                temperature=temperature
+                temperature=temperature,
+                custom_prompt=custom_prompt
             )
             
             self.results.append(result)
@@ -446,7 +475,7 @@ class BenchmarkRunner:
         if self.results:
             fieldnames = [
                 "sample_name", "filename", "level", "backend", "gpu_arch", 
-                "model_name", "server_type", "timestamp", "request_id",
+                "model_name", "server_type", "custom_prompt", "timestamp", "request_id",
                 "status", "compiled", "correctness",
                 "runtime", "runtime_mean", "runtime_std", "runtime_min", "runtime_max",
                 "ref_runtime", "ref_runtime_mean", "ref_runtime_std", "ref_runtime_min", "ref_runtime_max",
@@ -509,6 +538,8 @@ def main():
                         help="Max tokens (default: 4096)")
     parser.add_argument("--temperature", type=float, default=1.0,
                         help="Temperature (default: 0.0)")
+    parser.add_argument("--custom-prompt", type=str, default=CUSTOM_PROMPT,
+                        help="Custom prompt to append to generation prompt (default: None)")
     parser.add_argument("--output-dir", type=str, default="results/benchmark",
                         help="Output directory (default: results/benchmark)")
     parser.add_argument("--start-from", type=str, default=None,
@@ -528,6 +559,7 @@ def main():
             server_type=args.server_type,
             max_tokens=args.max_tokens,
             temperature=args.temperature,
+            custom_prompt=args.custom_prompt,
             output_dir=args.output_dir,
             start_from=args.start_from,
             limit=args.limit

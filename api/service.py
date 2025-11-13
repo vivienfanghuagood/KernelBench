@@ -124,14 +124,14 @@ def _worker_generate_kernel(request_id: str, repo_top_dir: str):
             if not eval_result.correctness:
                 # Check for runtime_error_traceback or runtime_error in metadata
                 if 'runtime_error_traceback' in eval_result.metadata:
-                    eval_error_msg = eval_result.metadata['runtime_error_traceback']
+                    eval_error_msg = str(eval_result.metadata['runtime_error_traceback'])
                 elif 'runtime_error' in eval_result.metadata:
-                    eval_error_msg = eval_result.metadata['runtime_error']
+                    eval_error_msg = str(eval_result.metadata['runtime_error'])
                 elif 'compilation_error' in eval_result.metadata:
-                    eval_error_msg = eval_result.metadata['compilation_error']
+                    eval_error_msg = str(eval_result.metadata['compilation_error'])
                 else:
                     # If no specific error, just note correctness failed
-                    eval_error_msg = f"Correctness check failed. Metadata: {eval_result.metadata}"
+                    eval_error_msg = f"Correctness check failed. Metadata: {str(eval_result.metadata)}"
                     
         except Exception as eval_error:
             eval_result_str = f"Evaluation failed: {str(eval_error)}"

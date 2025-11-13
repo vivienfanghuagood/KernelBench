@@ -436,6 +436,9 @@ class BenchmarkRunner:
             print(f"\n{'#'*80}")
             print(f"# Progress: {idx}/{total_samples} ({idx/total_samples*100:.1f}%)")
             print(f"{'#'*80}")
+            # import pdb;pdb.set_trace()
+            if sample["name"].find("conv") != -1:
+                continue
             
             result = self.process_sample(
                 sample=sample,

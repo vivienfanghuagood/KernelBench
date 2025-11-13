@@ -111,6 +111,9 @@ class DatabaseManager:
         for key, value in kwargs.items():
             if key in ['generated_kernel', 'error_message', 'eval_result']:
                 update_fields.append(f"{key} = ?")
+                # Ensure all values are strings or None to avoid SQLite type errors
+                if value is not None and not isinstance(value, str):
+                    value = str(value)
                 params.append(value)
         
         params.append(request_id)

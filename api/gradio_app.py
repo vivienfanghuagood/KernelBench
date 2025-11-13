@@ -594,7 +594,7 @@ class KernelBenchGradioApp:
                             view_error_message = gr.Textbox(
                                 label="Error Details",
                                 lines=12,
-                                max_lines=20,
+                                max_lines=100,
                                 interactive=False,
                                 placeholder="No error message available"
                             )

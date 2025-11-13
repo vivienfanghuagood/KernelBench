@@ -32,7 +32,7 @@ kernel_size = 2
 scale_factor = 0.5
 
 def get_inputs():
-    return [torch.rand(batch_size, in_features)]
+    return [torch.rand(batch_size, in_features, dtype=torch.float16)]
 
 def get_init_inputs():
     return [in_features, out_features, kernel_size, scale_factor]

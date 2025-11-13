@@ -8,7 +8,7 @@ class Model(nn.Module):
     def __init__(self, in_features, out_features, bias_shape):
         super(Model, self).__init__()
         self.gemm = nn.Linear(in_features, out_features, bias=False)
-        self.bias = nn.Parameter(torch.randn(bias_shape))
+        self.bias = nn.Parameter(torch.randn(bias_shape, dtype=torch.float16))
 
     def forward(self, x):
         """
@@ -28,7 +28,7 @@ out_features = 8192
 bias_shape = (out_features,)
 
 def get_inputs():
-    return [torch.rand(batch_size, in_features)]
+    return [torch.rand(batch_size, in_features, dtype=torch.float16)]
 
 def get_init_inputs():
     return [in_features, out_features, bias_shape]

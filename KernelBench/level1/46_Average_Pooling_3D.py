@@ -39,7 +39,7 @@ stride = 2
 padding = 1
 
 def get_inputs():
-    x = torch.rand(batch_size, channels, depth, height, width)
+    x = torch.rand(batch_size, channels, depth, height, width, dtype=torch.float16)
     return [x]
 
 def get_init_inputs():

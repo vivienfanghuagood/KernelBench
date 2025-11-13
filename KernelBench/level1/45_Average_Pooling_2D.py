@@ -36,7 +36,7 @@ width = 2048
 kernel_size = 11
 
 def get_inputs():
-    x = torch.rand(batch_size, channels, height, width)
+    x = torch.rand(batch_size, channels, height, width, dtype=torch.float16)
     return [x]
 
 def get_init_inputs():

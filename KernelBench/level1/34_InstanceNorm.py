@@ -33,7 +33,7 @@ dim1 = 512
 dim2 = 512
 
 def get_inputs():
-    x = torch.rand(batch_size, features, dim1, dim2)
+    x = torch.rand(batch_size, features, dim1, dim2, dtype=torch.float16)
     return [x]
 
 def get_init_inputs():

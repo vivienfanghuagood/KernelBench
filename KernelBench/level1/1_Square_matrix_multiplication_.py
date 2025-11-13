@@ -24,8 +24,8 @@ class Model(nn.Module):
 N = 2048 * 2
 
 def get_inputs():
-    A = torch.rand(N, N)
-    B = torch.rand(N, N)
+    A = torch.rand(N, N, dtype=torch.float16)
+    B = torch.rand(N, N, dtype=torch.float16)
     return [A, B]
 
 def get_init_inputs():

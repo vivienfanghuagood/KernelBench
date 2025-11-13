@@ -22,7 +22,7 @@ out_features = 16384
 constant = 2.0
 
 def get_inputs():
-    return [torch.rand(batch_size, in_features)]
+    return [torch.rand(batch_size, in_features, dtype=torch.float16)]
 
 def get_init_inputs():
     return [in_features, out_features, constant]

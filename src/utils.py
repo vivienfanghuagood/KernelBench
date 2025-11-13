@@ -145,7 +145,11 @@ def query_server(
 
         case "anthropic":
             client = anthropic.Anthropic(
-                api_key=ANTHROPIC_KEY,
+                base_url="https://llm-api.amd.com/Anthropic",
+                api_key="dummy",
+                default_headers={
+                    "Ocp-Apim-Subscription-Key": os.environ.get("LLM_GATEWAY_KEY"),
+                }
             )
             model = model_name
         case "google":

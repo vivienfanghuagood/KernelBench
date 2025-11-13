@@ -56,7 +56,7 @@ class KernelBenchGradioApp:
         model_map = {
             "deepseek": "deepseek-coder",
             "openai": "gpt-5",
-            "anthropic": "claude-3-5-sonnet-20241022",
+            "anthropic": "claude-sonnet-4",
             "google": "gemini-1.5-flash-002"
         }
         return model_map.get(server_type, "gpt-5")

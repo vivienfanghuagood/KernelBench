@@ -16,6 +16,7 @@ import csv
 import argparse
 
 CUSTOM_PROMPT = """
+###You must gurantee the correctness of ModelNew, NOT cheating.###
 ### **Important Constraints**
 1. **Allowed math functions:** `exp`, `log`, `sqrt`, `rsqrt`, `sin`, `cos`, `sigmoid`, `softmax`, `relu`, `gelu`, `tanh` *(implemented manually if needed, not via `tl.tanh`)*.  
 2. **Disallowed / Missing APIs:**  
@@ -31,7 +32,17 @@ CUSTOM_PROMPT = """
    - `tl.store` target must be a scalar or contiguous pointer; block tensors cannot be stored directly.  
    - `tl.arange` arguments must be **compile-time constexpr**.  
 5. Ensure the generated kernel compiles without syntax errors or undefined functions. 
-6. **Shared memory per block ≤ **65536 bytes**.  
+6. Keep in mind in current GPU(AMD MI300x), **Shared memory per block ≤ **65536 bytes**, Be sure to configure parameters such as num_stage and block size carefully so shared memory stays within limits.  
+7. To make good performance, you can use autotune to each triton kernel, like this: @triton.autotune(
+    configs=[
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 32, 'num_warps': 8, 'num_stages': 3}),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 64, 'num_warps': 8, 'num_stages': 2}),
+        triton.Config({'BLOCK_M': 64,  'BLOCK_N': 128, 'BLOCK_K': 64, 'num_warps': 8, 'num_stages': 3}),
+        triton.Config({'BLOCK_M': 64,  'BLOCK_N': 64,  'BLOCK_K': 64, 'num_warps': 4, 'num_stages': 3}),
+    ],
+    key=['M','N','K'],
+)
+keep in mind these parameters are suitable for AMD MI300x.
 """
 class BenchmarkRunner:
     def __init__(self, api_base_url: str = "http://localhost:8009"):
@@ -437,7 +448,7 @@ class BenchmarkRunner:
             print(f"# Progress: {idx}/{total_samples} ({idx/total_samples*100:.1f}%)")
             print(f"{'#'*80}")
             # import pdb;pdb.set_trace()
-            if sample["name"].find("conv") != -1:
+            if sample["name"].find("conv") != -1 or sample["name"].find("Conv") != -1 or sample["name"].find("cumsom") != -1 or sample["name"].find("Loss") != -1:
                 continue
             
             result = self.process_sample(

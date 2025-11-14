@@ -43,6 +43,7 @@ CUSTOM_PROMPT = """
     key=['M','N','K'],
 )
 keep in mind these parameters are suitable for AMD MI300x.
+8. Careful when using some ops like `tl.exp` and datatypes is fp16, maybe you should cast to fp32 to make it correct.
 """
 class BenchmarkRunner:
     def __init__(self, api_base_url: str = "http://localhost:8009"):

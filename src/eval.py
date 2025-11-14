@@ -436,6 +436,46 @@ def _process_input_tensor(tensor, device, backend):
     return tensor.to(device=device)
 
 
+def _get_input_dtype(inputs):
+    """
+    Helper function to detect the dtype of input tensors.
+    Returns the first float dtype found, or torch.float32 as default.
+    
+    Args:
+        inputs: List of input tensors or values
+    
+    Returns:
+        torch.dtype: The detected dtype (torch.float16, torch.float32, etc.)
+    """
+    for inp in inputs:
+        if isinstance(inp, torch.Tensor) and inp.dtype in [torch.float16, torch.float32, torch.float64]:
+            return inp.dtype
+    return torch.float32  # Default fallback
+
+
+def _convert_model_to_input_dtype(model, inputs):
+    """
+    Convert model parameters to match the dtype of input tensors.
+    
+    Args:
+        model: PyTorch model instance
+        inputs: List of input tensors
+    
+    Returns:
+        model: Model with converted dtype
+    """
+    input_dtype = _get_input_dtype(inputs)
+    
+    if input_dtype == torch.float16:
+        return model.half()
+    elif input_dtype == torch.float32:
+        return model.float()
+    elif input_dtype == torch.float64:
+        return model.double()
+    else:
+        return model
+
+
 def eval_kernel_against_ref(
     original_model_src: str,
     custom_model_src: str,
@@ -511,12 +551,19 @@ def eval_kernel_against_ref(
     # Convert inputs to appropriate dtypes for GPU computation
     init_inputs = [_process_input_tensor(x, device, backend) for x in init_inputs]
     
+    # Get a sample of actual inputs to detect dtype
+    set_seed(seed_num)
+    sample_inputs = get_inputs()
+    
     with torch.no_grad():
         set_seed(seed_num)  # set seed for reproducible weights
         original_model = Model(*init_inputs)
+        # Convert model dtype to match input dtype (e.g., float16 or float32)
+        original_model = _convert_model_to_input_dtype(original_model, sample_inputs)
         assert hasattr(original_model, "forward")
         if verbose:
-            print("[Eval] Original Model Loaded")
+            input_dtype = _get_input_dtype(sample_inputs)
+            print(f"[Eval] Original Model Loaded with dtype: {input_dtype}")
     
     if verbose:
         print("[Eval] Loading and Compiling New Model with Custom CUDA Kernel")
@@ -567,6 +614,8 @@ def eval_kernel_against_ref(
         with torch.no_grad():
             set_seed(seed_num)  # set seed for reproducible weights
             custom_model = ModelNew(*init_inputs)
+            # Convert model dtype to match input dtype (e.g., float16 or float32)
+            custom_model = _convert_model_to_input_dtype(custom_model, sample_inputs)
             assert hasattr(custom_model, "forward")
             # Move models to GPU with float16 dtype (only for TileLang)
             # if backend.lower() == "tilelang":

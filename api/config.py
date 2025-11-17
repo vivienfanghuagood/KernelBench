@@ -25,3 +25,6 @@ class APIConfig:
     DEFAULT_TEMPERATURE = float(os.getenv("KERNELBENCH_DEFAULT_TEMPERATURE", "0.0"))
     DEFAULT_NUM_CORRECT_TRIALS = int(os.getenv("KERNELBENCH_NUM_CORRECT_TRIALS", "3"))
     DEFAULT_NUM_PERF_TRIALS = int(os.getenv("KERNELBENCH_NUM_PERF_TRIALS", "50"))
+    
+    # Reflection/Retry settings
+    DEFAULT_MAX_RETRIES = int(os.getenv("KERNELBENCH_DEFAULT_MAX_RETRIES", "3"))

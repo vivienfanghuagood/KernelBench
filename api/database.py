@@ -42,6 +42,9 @@ class DatabaseManager:
                 temperature REAL DEFAULT 0.0,
                 custom_prompt TEXT,
                 problem_name TEXT,
+                max_retries INTEGER DEFAULT 3,
+                current_retry INTEGER DEFAULT 0,
+                retry_history TEXT,
                 status TEXT NOT NULL DEFAULT 'pending',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 started_at TIMESTAMP,
@@ -63,7 +66,8 @@ class DatabaseManager:
                                 max_tokens: int = 4096,
                                 temperature: float = 0.0,
                                 custom_prompt: str = None,
-                                problem_name: str = None) -> str:
+                                problem_name: str = None,
+                                max_retries: int = 3) -> str:
         """Create a new generation request and return the request ID"""
         request_id = str(uuid.uuid4())
         conn = self.get_connection()
@@ -71,10 +75,10 @@ class DatabaseManager:
         
         cursor.execute("""
             INSERT INTO generation_requests 
-            (id, ref_arch_src, gpu_arch, backend, model_name, server_type, max_tokens, temperature, custom_prompt, problem_name, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, ref_arch_src, gpu_arch, backend, model_name, server_type, max_tokens, temperature, custom_prompt, problem_name, max_retries, current_retry, retry_history, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (request_id, ref_arch_src, json.dumps(gpu_arch), backend, model_name, 
-              server_type, max_tokens, temperature, custom_prompt, problem_name, GenerationStatus.PENDING.value))
+              server_type, max_tokens, temperature, custom_prompt, problem_name, max_retries, 0, json.dumps([]), GenerationStatus.PENDING.value))
         
         conn.commit()
         return request_id
@@ -92,6 +96,10 @@ class DatabaseManager:
         if row:
             result = dict(row)
             result['gpu_arch'] = json.loads(result['gpu_arch'])
+            if result.get('retry_history'):
+                result['retry_history'] = json.loads(result['retry_history'])
+            else:
+                result['retry_history'] = []
             return result
         return None
     
@@ -109,10 +117,12 @@ class DatabaseManager:
             update_fields.append("completed_at = CURRENT_TIMESTAMP")
         
         for key, value in kwargs.items():
-            if key in ['generated_kernel', 'error_message', 'eval_result']:
+            if key in ['generated_kernel', 'error_message', 'eval_result', 'retry_history', 'current_retry']:
                 update_fields.append(f"{key} = ?")
                 # Ensure all values are strings or None to avoid SQLite type errors
-                if value is not None and not isinstance(value, str):
+                if key == 'retry_history' and value is not None:
+                    value = json.dumps(value)
+                elif value is not None and not isinstance(value, (str, int)):
                     value = str(value)
                 params.append(value)
         
@@ -142,6 +152,10 @@ class DatabaseManager:
         for row in rows:
             result = dict(row)
             result['gpu_arch'] = json.loads(result['gpu_arch'])
+            if result.get('retry_history'):
+                result['retry_history'] = json.loads(result['retry_history'])
+            else:
+                result['retry_history'] = []
             results.append(result)
         
         return results

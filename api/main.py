@@ -37,6 +37,7 @@ class GenerationRequest(BaseModel):
     temperature: float = 0.0
     custom_prompt: Optional[str] = None
     problem_name: Optional[str] = None
+    max_retries: Optional[int] = None  # None means use default from APIConfig
 
 class GenerationResponse(BaseModel):
     model_config = {"protected_namespaces": ()}
@@ -59,6 +60,9 @@ class StatusResponse(BaseModel):
     error_message: Optional[str]
     custom_prompt: Optional[str]
     problem_name: Optional[str]
+    max_retries: Optional[int]
+    current_retry: Optional[int]
+    retry_history: Optional[list]
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
@@ -108,7 +112,8 @@ async def create_generation_request(request: GenerationRequest, background_tasks
             max_tokens=request.max_tokens,
             temperature=request.temperature,
             custom_prompt=request.custom_prompt,
-            problem_name=request.problem_name
+            problem_name=request.problem_name,
+            max_retries=request.max_retries
         )
         
         return GenerationResponse(
@@ -140,7 +145,10 @@ async def get_generation_status(request_id: str):
             eval_result=request_data['eval_result'],
             error_message=request_data['error_message'],
             custom_prompt=request_data.get('custom_prompt'),
-            problem_name=request_data.get('problem_name')
+            problem_name=request_data.get('problem_name'),
+            max_retries=request_data.get('max_retries'),
+            current_retry=request_data.get('current_retry'),
+            retry_history=request_data.get('retry_history')
         )
         
     except HTTPException:

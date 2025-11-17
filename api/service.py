@@ -21,6 +21,41 @@ from src.utils import (
 )
 from api.database import db, GenerationStatus
 
+def _construct_reflection_prompt(original_prompt: str, generated_code: str, error_message: str, retry_count: int) -> str:
+    """Construct a reflection prompt with error feedback for LLM to retry generation
+    
+    Args:
+        original_prompt: The original prompt used for generation
+        generated_code: The code that was generated but failed
+        error_message: The error message from compilation or correctness check
+        retry_count: Current retry attempt number
+    
+    Returns:
+        A new prompt that includes the original request, previous attempt, and error feedback
+    """
+    reflection_prompt = f"""The previous attempt to generate the kernel failed. Here is the feedback:
+
+ORIGINAL REQUEST:
+{original_prompt}
+
+PREVIOUS GENERATED CODE (Attempt #{retry_count}):
+```
+{generated_code}
+```
+
+ERROR MESSAGE:
+{error_message}
+
+Please analyze the error and generate a corrected version of the kernel that fixes the issues mentioned above. Make sure to:
+1. Carefully read the error message and understand what went wrong
+2. Fix the compilation errors or correctness issues
+3. Generate complete, working code that passes all tests
+4. Follow the same requirements from the original request
+
+Generate the corrected kernel code:"""
+    
+    return reflection_prompt
+
 def _set_process_limits():
     """Set resource limits for worker processes"""
     try:
@@ -72,6 +107,9 @@ def _worker_generate_kernel(request_id: str, repo_top_dir: str):
         temperature = request_data['temperature']
         custom_prompt = request_data.get('custom_prompt', None)
         problem_name = request_data.get('problem_name', None)
+        max_retries = request_data.get('max_retries', APIConfig.DEFAULT_MAX_RETRIES)
+        current_retry = request_data.get('current_retry', 0)
+        retry_history = request_data.get('retry_history', [])
         
         # Set GPU architecture
         if gpu_arch:
@@ -89,61 +127,163 @@ def _worker_generate_kernel(request_id: str, repo_top_dir: str):
         
         # Generate prompt based on backend
         if backend == "cuda":
-            custom_prompt_template = prompt_generate_custom_cuda_from_prompt_template(ref_arch_src)
+            original_prompt = prompt_generate_custom_cuda_from_prompt_template(ref_arch_src)
         elif backend in ["triton", "cute"]:
-            custom_prompt_template = get_prompt_for_backend(ref_arch_src, backend)
+            original_prompt = get_prompt_for_backend(ref_arch_src, backend)
         else:
             raise ValueError(f"Unsupported backend: {backend}. Must be 'cuda', 'triton', or 'cute'.")
         
         # Append custom prompt if provided
         if custom_prompt and custom_prompt.strip():
-            custom_prompt_template = custom_prompt_template + "\n\n" + custom_prompt.strip()
+            original_prompt = original_prompt + "\n\n" + custom_prompt.strip()
         
-        # Generate kernel
-        custom_kernel = inference_server(custom_prompt_template)
-        custom_kernel = extract_first_code(custom_kernel, ["python", "cpp"])
-        
-        if custom_kernel is None:
-            raise ValueError(f"Custom {backend} kernel code generation failed")
-        
-        # Evaluate kernel (optional, can be made configurable)
+        # Retry loop with reflection
+        custom_kernel = None
+        eval_result = None
         eval_error_msg = None
-        try:
-            eval_result = eval_kernel_against_ref(
-                ref_arch_src,
-                custom_kernel,
-                verbose=False,
-                measure_performance=True,
-                num_correct_trials=APIConfig.DEFAULT_NUM_CORRECT_TRIALS,
-                num_perf_trials=APIConfig.DEFAULT_NUM_PERF_TRIALS,
-                backend=backend,
-            )
-            eval_result_str = str(eval_result)
-            
-            # Extract error message if correctness is False
-            if not eval_result.correctness:
-                # Check for runtime_error_traceback or runtime_error in metadata
-                if 'runtime_error_traceback' in eval_result.metadata:
-                    eval_error_msg = str(eval_result.metadata['runtime_error_traceback'])
-                elif 'runtime_error' in eval_result.metadata:
-                    eval_error_msg = str(eval_result.metadata['runtime_error'])
-                elif 'compilation_error' in eval_result.metadata:
-                    eval_error_msg = str(eval_result.metadata['compilation_error'])
-                else:
-                    # If no specific error, just note correctness failed
-                    eval_error_msg = f"Correctness check failed. Metadata: {str(eval_result.metadata)}"
-                    
-        except Exception as eval_error:
-            eval_result_str = f"Evaluation failed: {str(eval_error)}"
-            eval_error_msg = traceback.format_exc()
+        final_eval_result_str = None
         
-        # Update request with results
+        for attempt in range(max_retries + 1):  # +1 for initial attempt
+            current_retry = attempt
+            
+            # Determine prompt to use
+            if attempt == 0:
+                # First attempt: use original prompt
+                prompt_to_use = original_prompt
+            else:
+                # Retry attempt: construct reflection prompt with error feedback
+                prompt_to_use = _construct_reflection_prompt(
+                    original_prompt, 
+                    custom_kernel, 
+                    eval_error_msg, 
+                    attempt
+                )
+            
+            # Generate kernel
+            try:
+                custom_kernel = inference_server(prompt_to_use)
+                custom_kernel = extract_first_code(custom_kernel, ["python", "cpp"])
+                
+                if custom_kernel is None:
+                    eval_error_msg = f"Custom {backend} kernel code generation failed - no valid code extracted"
+                    # Record this attempt in history
+                    retry_history.append({
+                        'attempt': attempt,
+                        'generated_code': None,
+                        'error': eval_error_msg
+                    })
+                    # Update database with current retry status
+                    db.update_request_status(
+                        request_id,
+                        GenerationStatus.PROCESSING,
+                        current_retry=current_retry,
+                        retry_history=retry_history
+                    )
+                    continue
+            except Exception as gen_error:
+                eval_error_msg = f"Generation error: {str(gen_error)}\n{traceback.format_exc()}"
+                retry_history.append({
+                    'attempt': attempt,
+                    'generated_code': None,
+                    'error': eval_error_msg
+                })
+                db.update_request_status(
+                    request_id,
+                    GenerationStatus.PROCESSING,
+                    current_retry=current_retry,
+                    retry_history=retry_history
+                )
+                continue
+            
+            # Evaluate kernel
+            eval_error_msg = None
+            try:
+                eval_result = eval_kernel_against_ref(
+                    ref_arch_src,
+                    custom_kernel,
+                    verbose=False,
+                    measure_performance=True,
+                    num_correct_trials=APIConfig.DEFAULT_NUM_CORRECT_TRIALS,
+                    num_perf_trials=APIConfig.DEFAULT_NUM_PERF_TRIALS,
+                    backend=backend,
+                )
+                final_eval_result_str = str(eval_result)
+                
+                # Check if generation was successful
+                if eval_result.correctness:
+                    # Success! Record and break out of retry loop
+                    retry_history.append({
+                        'attempt': attempt,
+                        'generated_code': custom_kernel[:500] + '...' if len(custom_kernel) > 500 else custom_kernel,
+                        'success': True,
+                        'eval_result': final_eval_result_str
+                    })
+                    db.update_request_status(
+                        request_id, 
+                        GenerationStatus.COMPLETED,
+                        generated_kernel=custom_kernel,
+                        eval_result=final_eval_result_str,
+                        current_retry=current_retry,
+                        retry_history=retry_history
+                    )
+                    return  # Exit successfully
+                else:
+                    # Extract error message for reflection
+                    if 'runtime_error_traceback' in eval_result.metadata:
+                        eval_error_msg = str(eval_result.metadata['runtime_error_traceback'])
+                    elif 'runtime_error' in eval_result.metadata:
+                        eval_error_msg = str(eval_result.metadata['runtime_error'])
+                    elif 'compilation_error' in eval_result.metadata:
+                        eval_error_msg = str(eval_result.metadata['compilation_error'])
+                    else:
+                        eval_error_msg = f"Correctness check failed. Metadata: {str(eval_result.metadata)}"
+                    
+                    # Record this attempt in history
+                    retry_history.append({
+                        'attempt': attempt,
+                        'generated_code': custom_kernel[:500] + '...' if len(custom_kernel) > 500 else custom_kernel,
+                        'error': eval_error_msg,
+                        'success': False
+                    })
+                    
+                    # Update database with current retry status
+                    db.update_request_status(
+                        request_id,
+                        GenerationStatus.PROCESSING,
+                        current_retry=current_retry,
+                        retry_history=retry_history
+                    )
+                    
+            except Exception as eval_error:
+                eval_error_msg = f"Evaluation failed: {str(eval_error)}\n{traceback.format_exc()}"
+                final_eval_result_str = eval_error_msg
+                
+                # Record this attempt in history
+                retry_history.append({
+                    'attempt': attempt,
+                    'generated_code': custom_kernel[:500] + '...' if len(custom_kernel) > 500 else custom_kernel,
+                    'error': eval_error_msg,
+                    'success': False
+                })
+                
+                # Update database with current retry status
+                db.update_request_status(
+                    request_id,
+                    GenerationStatus.PROCESSING,
+                    current_retry=current_retry,
+                    retry_history=retry_history
+                )
+        
+        # If we reach here, all retries have been exhausted
+        error_summary = f"All {max_retries + 1} attempts failed. Last error: {eval_error_msg}"
         db.update_request_status(
-            request_id, 
-            GenerationStatus.COMPLETED,
+            request_id,
+            GenerationStatus.FAILED,
             generated_kernel=custom_kernel,
-            eval_result=eval_result_str,
-            error_message=eval_error_msg
+            eval_result=final_eval_result_str,
+            error_message=error_summary,
+            current_retry=current_retry,
+            retry_history=retry_history
         )
         
     except Exception as e:
@@ -227,8 +367,25 @@ class KernelGenerationService:
                                 max_tokens: int = 4096,
                                 temperature: float = 0.0,
                                 custom_prompt: str = None,
-                                problem_name: str = None) -> str:
-        """Submit a new kernel generation request using multiprocessing"""
+                                problem_name: str = None,
+                                max_retries: int = None) -> str:
+        """Submit a new kernel generation request using multiprocessing
+        
+        Args:
+            ref_arch_src: Reference architecture source code
+            gpu_arch: GPU architecture specification
+            backend: Backend type (cuda, triton, cute)
+            model_name: Name of the LLM model to use
+            server_type: Type of inference server
+            max_tokens: Maximum tokens for generation
+            temperature: Temperature for sampling
+            custom_prompt: Optional custom prompt to append
+            problem_name: Optional problem name
+            max_retries: Maximum number of retries on failure (default: APIConfig.DEFAULT_MAX_RETRIES)
+        
+        Returns:
+            request_id: Unique identifier for the generation request
+        """
         # Clean up finished processes and check timeouts
         self._cleanup_finished_processes()
         for request_id in list(self.active_processes.keys()):
@@ -241,6 +398,10 @@ class KernelGenerationService:
                 f"Please wait for some tasks to complete."
             )
         
+        # Use default max_retries if not provided
+        if max_retries is None:
+            max_retries = APIConfig.DEFAULT_MAX_RETRIES
+        
         # Create request in database
         request_id = db.create_generation_request(
             ref_arch_src=ref_arch_src,
@@ -251,7 +412,8 @@ class KernelGenerationService:
             max_tokens=max_tokens,
             temperature=temperature,
             custom_prompt=custom_prompt,
-            problem_name=problem_name
+            problem_name=problem_name,
+            max_retries=max_retries
         )
         
         # Start generation in separate process

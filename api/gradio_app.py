@@ -72,6 +72,7 @@ class KernelBenchGradioApp:
         temperature: float,
         custom_prompt: str,
         problem_name: str,
+        max_retries: int,
         progress=gr.Progress()
     ) -> Tuple[str, str, str, str]:
         if not ref_arch_src or not ref_arch_src.strip():
@@ -87,7 +88,8 @@ class KernelBenchGradioApp:
                 "max_tokens": int(max_tokens),
                 "temperature": float(temperature),
                 "custom_prompt": custom_prompt if custom_prompt and custom_prompt.strip() else None,
-                "problem_name": problem_name if problem_name and problem_name.strip() else None
+                "problem_name": problem_name if problem_name and problem_name.strip() else None,
+                "max_retries": int(max_retries) if max_retries is not None else None
             }
             
             response = requests.post(
@@ -123,7 +125,12 @@ class KernelBenchGradioApp:
                     progress(0.25, desc="⏳ Request queued...")
                 elif current_status == "processing":
                     elapsed = int(time.time() - start_time)
-                    progress(0.5, desc=f"🔄 Generating kernel... ({elapsed}s elapsed)")
+                    current_retry = status_data.get("current_retry", 0)
+                    max_retries = status_data.get("max_retries", 0)
+                    if current_retry > 0:
+                        progress(0.5, desc=f"🔄 Retrying with reflection... (Attempt {current_retry + 1}/{max_retries + 1}, {elapsed}s elapsed)")
+                    else:
+                        progress(0.5, desc=f"🔄 Generating kernel... ({elapsed}s elapsed)")
                 elif current_status == "completed":
                     progress(1.0, desc="✅ Generation completed!")
                     
@@ -131,13 +138,18 @@ class KernelBenchGradioApp:
                     eval_result_str = status_data.get("eval_result", "")
                     eval_formatted = self.format_eval_results(eval_result_str)
                     
-                    success_msg = f"✅ Generation completed successfully!\n**Request ID:** `{request_id[:8]}...`"
+                    current_retry = status_data.get("current_retry", 0)
+                    retry_info = f"\n**Attempts:** {current_retry + 1}" if current_retry > 0 else ""
+                    success_msg = f"✅ Generation completed successfully!{retry_info}\n**Request ID:** `{request_id[:8]}...`"
                     
                     return (generated_kernel, eval_formatted, success_msg, request_id)
                     
                 elif current_status == "failed":
                     error_msg = status_data.get("error_message", "Unknown error")
-                    return ("", "", f"❌ Generation failed: {error_msg}\n**Request ID:** `{request_id[:8]}...`", request_id)
+                    current_retry = status_data.get("current_retry", 0)
+                    max_retries = status_data.get("max_retries", 0)
+                    retry_info = f"\n**Total Attempts:** {current_retry + 1}/{max_retries + 1}" if max_retries > 0 else ""
+                    return ("", "", f"❌ Generation failed: {error_msg}{retry_info}\n**Request ID:** `{request_id[:8]}...`", request_id)
                 
                 time.sleep(2)
                 
@@ -508,6 +520,15 @@ class KernelBenchGradioApp:
                                     step=0.1
                                 )
                             
+                            with gr.Row():
+                                max_retries = gr.Number(
+                                    label="Max Retries (Reflection)",
+                                    value=3,
+                                    minimum=0,
+                                    maximum=10,
+                                    info="Number of times to retry generation with error feedback"
+                                )
+                            
                             generate_btn = gr.Button("🚀 Generate Kernel", variant="primary", size="lg")
                         
                         with gr.Column(scale=1):
@@ -543,7 +564,7 @@ class KernelBenchGradioApp:
                         fn=self.submit_generation,
                         inputs=[
                             ref_arch_src, backend, server_type, model_name,
-                            gpu_arch, max_tokens, temperature, custom_prompt_input, problem_name_state
+                            gpu_arch, max_tokens, temperature, custom_prompt_input, problem_name_state, max_retries
                         ],
                         outputs=[generated_kernel, eval_results, status_msg, request_id_state]
                     )

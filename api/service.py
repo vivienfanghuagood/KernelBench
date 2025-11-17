@@ -84,6 +84,98 @@ Generate the corrected kernel code:"""
     
     return reflection_prompt
 
+def _construct_optimization_prompt(original_prompt: str, ref_code: str, custom_kernel: str, speedup: float, retry_count: int, backend: str) -> str:
+    """Construct an optimization prompt when the generated kernel is slower than reference
+    
+    Args:
+        original_prompt: The original prompt used for generation
+        ref_code: The reference implementation code
+        custom_kernel: The generated kernel code that is correct but slow
+        speedup: The speedup ratio (< 1.0 means slower than reference)
+        retry_count: Current retry attempt number
+        backend: Backend type (cuda, triton, cute)
+    
+    Returns:
+        A new prompt that asks LLM to optimize the kernel for better performance
+    """
+    # Backend-specific optimization hints
+    optimization_hints = ""
+    if backend == "triton":
+        optimization_hints = """
+For Triton kernels, consider the following optimization strategies:
+1. Use @triton.autotune decorator to automatically tune block sizes and other parameters
+2. Optimize memory access patterns (coalesced access, reduce bank conflicts)
+3. For AMD GPUs: typical optimal block sizes are 64, 128, 256, or 512
+4. For AMD GPUs: consider wave size (64 for RDNA/CDNA architectures)
+5. Use appropriate num_warps and num_stages parameters for your kernel
+6. Minimize memory transfers between global and shared memory
+7. Exploit data reuse through shared memory or register tiling
+8. Consider using block-level primitives for reductions
+
+Example autotune configuration for AMD GPUs:
+```python
+@triton.autotune(
+    configs=[
+        triton.Config({'BLOCK_SIZE': 64}, num_warps=2),
+        triton.Config({'BLOCK_SIZE': 128}, num_warps=4),
+        triton.Config({'BLOCK_SIZE': 256}, num_warps=4),
+        triton.Config({'BLOCK_SIZE': 512}, num_warps=8),
+    ],
+    key=['N'],
+)
+```"""
+    elif backend == "cuda":
+        optimization_hints = """
+For CUDA kernels, consider the following optimization strategies:
+1. Optimize thread block dimensions and grid dimensions
+2. Use shared memory to reduce global memory accesses
+3. Ensure coalesced memory access patterns
+4. Minimize thread divergence
+5. Use appropriate memory access instructions (e.g., vectorized loads/stores)
+6. Consider using warp-level primitives for reductions
+7. Profile memory bandwidth vs compute utilization
+8. For AMD GPUs: wave size is 64 (vs NVIDIA's warp size of 32)"""
+    elif backend == "cute":
+        optimization_hints = """
+For CuTe kernels, consider the following optimization strategies:
+1. Optimize tile sizes and thread block layouts
+2. Use efficient memory copy patterns with CuTe's copy atoms
+3. Leverage CuTe's layout algebra for optimal memory access
+4. Use appropriate MMA (Matrix Multiply-Accumulate) operations
+5. Consider pipeline optimization with async copies"""
+    
+    optimization_prompt = f"""The previous kernel generation was CORRECT but too SLOW (speedup: {speedup:.3f}x, meaning it's {1/speedup:.2f}x slower than reference). 
+We need to optimize it for better performance.
+
+ORIGINAL REQUEST:
+{original_prompt}
+
+REFERENCE IMPLEMENTATION:
+```
+{ref_code}
+```
+
+CURRENT GENERATED KERNEL (Attempt #{retry_count}, Correct but Slow):
+```
+{custom_kernel}
+```
+
+PERFORMANCE ISSUE:
+The kernel is functionally correct but achieves only {speedup:.3f}x speedup (current runtime is {1/speedup:.2f}x SLOWER than reference).
+We need speedup > 1.0x to be faster than the reference implementation.
+
+{optimization_hints}
+
+Please analyze the performance bottleneck and generate an OPTIMIZED version that:
+1. Maintains correctness (passes all tests)
+2. Achieves speedup > 1.0x (faster than reference)
+3. Implements the optimization strategies mentioned above
+4. Uses hardware-specific optimizations for the target GPU architecture
+
+Generate the optimized kernel code:"""
+    
+    return optimization_prompt
+
 def _set_process_limits():
     """Set resource limits for worker processes"""
     try:
@@ -169,11 +261,16 @@ def _worker_generate_kernel(request_id: str, repo_top_dir: str):
         if custom_prompt and custom_prompt.strip():
             original_prompt = original_prompt + "\n\n" + custom_prompt.strip()
         
-        # Retry loop with reflection
+        # Retry loop with reflection and optimization
         # custom_kernel = None  # Already declared at outer scope
         eval_result = None
         eval_error_msg = None
         # final_eval_result_str = None  # Already declared at outer scope
+        
+        # Track the best correct result across all attempts
+        best_correct_kernel = None
+        best_correct_speedup = -1.0
+        best_correct_eval_result_str = None
         
         for attempt in range(max_retries + 1):  # +1 for initial attempt
             current_retry = attempt
@@ -183,13 +280,25 @@ def _worker_generate_kernel(request_id: str, repo_top_dir: str):
                 # First attempt: use original prompt
                 prompt_to_use = original_prompt
             else:
-                # Retry attempt: construct reflection prompt with error feedback
-                prompt_to_use = _construct_reflection_prompt(
-                    original_prompt, 
-                    custom_kernel, 
-                    eval_error_msg, 
-                    attempt
-                )
+                # Retry attempt: determine if we need reflection (error) or optimization (slow)
+                if eval_result and eval_result.correctness and eval_result.compiled:
+                    # Previous result was correct but slow - use optimization prompt
+                    prompt_to_use = _construct_optimization_prompt(
+                        original_prompt,
+                        ref_arch_src,
+                        custom_kernel,
+                        eval_result.speedup,
+                        attempt,
+                        backend
+                    )
+                else:
+                    # Previous result had errors - use reflection prompt
+                    prompt_to_use = _construct_reflection_prompt(
+                        original_prompt, 
+                        custom_kernel, 
+                        eval_error_msg, 
+                        attempt
+                    )
             
             # Save prompt to log file
             _save_prompt_to_file(request_id, attempt, prompt_to_use)
@@ -244,16 +353,24 @@ def _worker_generate_kernel(request_id: str, repo_top_dir: str):
                 )
                 final_eval_result_str = str(eval_result)
                 
+                # Update best correct result if this one is better
+                if eval_result.correctness and eval_result.compiled:
+                    current_speedup = eval_result.speedup if eval_result.speedup > 0 else -1.0
+                    if current_speedup > best_correct_speedup:
+                        best_correct_kernel = custom_kernel
+                        best_correct_speedup = current_speedup
+                        best_correct_eval_result_str = final_eval_result_str
+                
                 # Check if generation was successful
-                # Success criteria: either correctness=True OR compiled=True (even if incorrect)
-                # Only retry if compilation failed
-                if eval_result.correctness or eval_result.compiled:
-                    # Success! Either fully correct or at least compiled successfully
-                    # Mark as completed even if correctness=False but compiled=True
+                # Success criteria: correctness=True AND compiled=True AND speedup > 1.0
+                # Continue optimization if speedup <= 1.0
+                if eval_result.correctness and eval_result.compiled and eval_result.speedup > 1.0:
+                    # Success! Correct and faster than reference
                     retry_history.append({
                         'attempt': attempt,
                         'generated_code': custom_kernel[:500] + '...' if len(custom_kernel) > 500 else custom_kernel,
                         'success': True,
+                        'speedup': eval_result.speedup,
                         'eval_result': final_eval_result_str
                     })
                     db.update_request_status(
@@ -265,8 +382,29 @@ def _worker_generate_kernel(request_id: str, repo_top_dir: str):
                         retry_history=retry_history
                     )
                     return  # Exit successfully
+                elif eval_result.correctness and eval_result.compiled:
+                    # Correct but too slow (speedup <= 1.0) - need optimization
+                    eval_error_msg = f"Kernel is correct but too slow. Speedup: {eval_result.speedup:.3f}x (need > 1.0x)"
+                    
+                    # Record this attempt in history
+                    retry_history.append({
+                        'attempt': attempt,
+                        'generated_code': custom_kernel[:500] + '...' if len(custom_kernel) > 500 else custom_kernel,
+                        'error': eval_error_msg,
+                        'speedup': eval_result.speedup,
+                        'success': False,
+                        'needs_optimization': True
+                    })
+                    
+                    # Update database with current retry status
+                    db.update_request_status(
+                        request_id,
+                        GenerationStatus.PROCESSING,
+                        current_retry=current_retry,
+                        retry_history=retry_history
+                    )
                 else:
-                    # Only retry if compilation failed (compiled=False)
+                    # Compilation or correctness failed - need reflection
                     # Extract error message for reflection
                     if 'runtime_error_traceback' in eval_result.metadata:
                         eval_error_msg = str(eval_result.metadata['runtime_error_traceback'])
@@ -313,22 +451,37 @@ def _worker_generate_kernel(request_id: str, repo_top_dir: str):
                     retry_history=retry_history
                 )
         
-        # If we reach here, all retries have been exhausted without successful compilation
-        # This means all attempts failed to compile (compiled=False in all attempts)
-        error_summary = f"All {max_retries + 1} compilation attempts failed. Last error: {eval_error_msg}"
-        
-        # Save final state with reference code, generated kernel, and error message
-        # ref_arch_src is already stored in the database from creation
-        # We explicitly save the last generated_kernel and comprehensive error info
-        db.update_request_status(
-            request_id,
-            GenerationStatus.FAILED,
-            generated_kernel=custom_kernel,  # Last attempt's generated code
-            eval_result=final_eval_result_str,
-            error_message=error_summary,
-            current_retry=current_retry,
-            retry_history=retry_history
-        )
+        # If we reach here, all retries have been exhausted without achieving speedup > 1.0
+        # Check if we have any correct result (even if slow)
+        if best_correct_kernel is not None:
+            # We have a correct result, but it's slower than expected
+            # Return this as completed with a note about performance
+            success_message = f"Generated correct kernel with speedup {best_correct_speedup:.3f}x (slower than reference, but functionally correct)"
+            db.update_request_status(
+                request_id,
+                GenerationStatus.COMPLETED,
+                generated_kernel=best_correct_kernel,
+                eval_result=best_correct_eval_result_str,
+                error_message=success_message,  # Use error_message field to note the performance issue
+                current_retry=current_retry,
+                retry_history=retry_history
+            )
+        else:
+            # No correct result found after all attempts
+            error_summary = f"All {max_retries + 1} attempts failed. Last error: {eval_error_msg}"
+            
+            # Save final state with reference code, generated kernel, and error message
+            # ref_arch_src is already stored in the database from creation
+            # We explicitly save the last generated_kernel and comprehensive error info
+            db.update_request_status(
+                request_id,
+                GenerationStatus.FAILED,
+                generated_kernel=custom_kernel,  # Last attempt's generated code
+                eval_result=final_eval_result_str,
+                error_message=error_summary,
+                current_retry=current_retry,
+                retry_history=retry_history
+            )
         
     except Exception as e:
         # Catch-all for unexpected errors - try to save whatever we have

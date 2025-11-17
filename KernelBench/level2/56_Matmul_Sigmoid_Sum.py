@@ -23,8 +23,8 @@ class Model(nn.Module):
         return x
 
 batch_size = 128
-input_size = 32768
-hidden_size = 32768
+input_size = 8192
+hidden_size = 8192
 
 def get_inputs():
     return [torch.rand(batch_size, input_size, dtype=torch.float16)]

@@ -24,7 +24,7 @@ class Model(nn.Module):
         x = self.group_norm(x)
         return x
 
-batch_size = 32768
+batch_size = 256
 in_features = 1024
 out_features = 4096
 num_groups = 64

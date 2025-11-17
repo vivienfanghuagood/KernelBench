@@ -31,7 +31,7 @@ class Model(nn.Module):
         x = x + original_x
         return x
 
-batch_size = 16384
+batch_size = 256
 in_features = 4096
 out_features = 4096
 scaling_factor = 0.5

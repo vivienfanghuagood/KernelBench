@@ -17,7 +17,7 @@ class Model(nn.Module):
         x = self.bn(x)
         return x
 
-batch_size = 16384
+batch_size = 256
 in_features = 4096
 out_features = 4096
 scale_shape = (out_features,)

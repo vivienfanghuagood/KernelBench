@@ -26,8 +26,8 @@ class Model(nn.Module):
         return x
 
 batch_size = 128
-in_features = 32768
-out_features = 32768
+in_features = 8192
+out_features = 8192
 kernel_size = 2
 scale_factor = 0.5
 

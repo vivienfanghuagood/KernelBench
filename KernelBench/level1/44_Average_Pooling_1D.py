@@ -31,7 +31,7 @@ class Model(nn.Module):
 
 batch_size = 64
 in_channels = 128
-input_length = 65536
+input_length = 8192
 kernel_size = 8
 stride = 1
 padding = 4

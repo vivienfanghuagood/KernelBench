@@ -24,8 +24,8 @@ class Model(nn.Module):
         return x
 
 batch_size = 128
-in_features = 16384
-out_features = 16384
+in_features = 8192
+out_features = 8192
 dropout_p = 0.2
 
 def get_inputs():

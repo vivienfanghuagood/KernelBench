@@ -18,7 +18,7 @@ class Model(nn.Module):
         x = torch.logsumexp(x, dim=1)  # compute LogSumExp over features per sample
         return x
 
-batch_size = 16384
+batch_size = 256
 input_size = 2048
 hidden_size = 4096
 output_size = 1024

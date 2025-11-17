@@ -33,7 +33,7 @@ class Model(nn.Module):
 
 batch_size = 64
 features = 192
-sequence_length = 65536
+sequence_length = 8192
 
 kernel_size = 8
 stride      = 1

@@ -499,14 +499,14 @@ class KernelBenchGradioApp:
                                 
                                 server_type = gr.Dropdown(
                                     choices=["deepseek", "openai", "anthropic", "google"],
-                                    value="openai",
+                                    value="anthropic",
                                     label="Model Provider"
                                 )
                             
                             with gr.Row():
                                 model_name = gr.Textbox(
                                     label="Model Name",
-                                    value="gpt-5"
+                                    value="claude-sonnet-4.5"
                                 )
                                 
                                 gpu_arch = gr.Dropdown(

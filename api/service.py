@@ -21,6 +21,34 @@ from src.utils import (
 )
 from api.database import db, GenerationStatus
 
+def _save_prompt_to_file(request_id: str, attempt: int, prompt: str):
+    """Save the prompt for a generation attempt to a log file
+    
+    Args:
+        request_id: The unique request identifier
+        attempt: The attempt number (0-indexed)
+        prompt: The prompt text to save
+    """
+    try:
+        # Ensure logs directory exists
+        logs_dir = APIConfig.LOGS_DIR
+        os.makedirs(logs_dir, exist_ok=True)
+        
+        # Create filename with request_id and trial number
+        filename = f"{request_id}_trial{attempt}.txt"
+        filepath = os.path.join(logs_dir, filename)
+        
+        # Write prompt to file
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(f"Request ID: {request_id}\n")
+            f.write(f"Attempt: {attempt}\n")
+            f.write(f"Timestamp: {datetime.now().isoformat()}\n")
+            f.write("=" * 80 + "\n\n")
+            f.write(prompt)
+    except Exception as e:
+        # Log error but don't fail the generation process
+        print(f"Warning: Failed to save prompt to file: {e}")
+
 def _construct_reflection_prompt(original_prompt: str, generated_code: str, error_message: str, retry_count: int) -> str:
     """Construct a reflection prompt with error feedback for LLM to retry generation
     
@@ -85,6 +113,10 @@ def _worker_generate_kernel(request_id: str, repo_top_dir: str):
     if hasattr(signal, 'SIGBREAK'):  # Windows
         signal.signal(signal.SIGBREAK, signal_handler)
     
+    # Track custom_kernel at outer scope for exception handling
+    custom_kernel = None
+    final_eval_result_str = None
+    
     try:
         # Set resource limits
         _set_process_limits()
@@ -138,10 +170,10 @@ def _worker_generate_kernel(request_id: str, repo_top_dir: str):
             original_prompt = original_prompt + "\n\n" + custom_prompt.strip()
         
         # Retry loop with reflection
-        custom_kernel = None
+        # custom_kernel = None  # Already declared at outer scope
         eval_result = None
         eval_error_msg = None
-        final_eval_result_str = None
+        # final_eval_result_str = None  # Already declared at outer scope
         
         for attempt in range(max_retries + 1):  # +1 for initial attempt
             current_retry = attempt
@@ -158,6 +190,9 @@ def _worker_generate_kernel(request_id: str, repo_top_dir: str):
                     eval_error_msg, 
                     attempt
                 )
+            
+            # Save prompt to log file
+            _save_prompt_to_file(request_id, attempt, prompt_to_use)
             
             # Generate kernel
             try:
@@ -210,8 +245,11 @@ def _worker_generate_kernel(request_id: str, repo_top_dir: str):
                 final_eval_result_str = str(eval_result)
                 
                 # Check if generation was successful
-                if eval_result.correctness:
-                    # Success! Record and break out of retry loop
+                # Success criteria: either correctness=True OR compiled=True (even if incorrect)
+                # Only retry if compilation failed
+                if eval_result.correctness or eval_result.compiled:
+                    # Success! Either fully correct or at least compiled successfully
+                    # Mark as completed even if correctness=False but compiled=True
                     retry_history.append({
                         'attempt': attempt,
                         'generated_code': custom_kernel[:500] + '...' if len(custom_kernel) > 500 else custom_kernel,
@@ -228,6 +266,7 @@ def _worker_generate_kernel(request_id: str, repo_top_dir: str):
                     )
                     return  # Exit successfully
                 else:
+                    # Only retry if compilation failed (compiled=False)
                     # Extract error message for reflection
                     if 'runtime_error_traceback' in eval_result.metadata:
                         eval_error_msg = str(eval_result.metadata['runtime_error_traceback'])
@@ -274,12 +313,17 @@ def _worker_generate_kernel(request_id: str, repo_top_dir: str):
                     retry_history=retry_history
                 )
         
-        # If we reach here, all retries have been exhausted
-        error_summary = f"All {max_retries + 1} attempts failed. Last error: {eval_error_msg}"
+        # If we reach here, all retries have been exhausted without successful compilation
+        # This means all attempts failed to compile (compiled=False in all attempts)
+        error_summary = f"All {max_retries + 1} compilation attempts failed. Last error: {eval_error_msg}"
+        
+        # Save final state with reference code, generated kernel, and error message
+        # ref_arch_src is already stored in the database from creation
+        # We explicitly save the last generated_kernel and comprehensive error info
         db.update_request_status(
             request_id,
             GenerationStatus.FAILED,
-            generated_kernel=custom_kernel,
+            generated_kernel=custom_kernel,  # Last attempt's generated code
             eval_result=final_eval_result_str,
             error_message=error_summary,
             current_retry=current_retry,
@@ -287,10 +331,13 @@ def _worker_generate_kernel(request_id: str, repo_top_dir: str):
         )
         
     except Exception as e:
+        # Catch-all for unexpected errors - try to save whatever we have
         error_message = f"Generation failed: {str(e)}\n{traceback.format_exc()}"
         db.update_request_status(
             request_id,
             GenerationStatus.FAILED,
+            generated_kernel=custom_kernel,  # May be None or partial result
+            eval_result=final_eval_result_str,  # May be None
             error_message=error_message
         )
 

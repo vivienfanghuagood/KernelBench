@@ -20,6 +20,9 @@ class APIConfig:
     # Database settings
     DB_PATH = os.getenv("KERNELBENCH_DB_PATH", "kernelbench_api.db")
     
+    # Logs settings
+    LOGS_DIR = os.getenv("KERNELBENCH_LOGS_DIR", os.path.join(os.path.dirname(__file__), "logs"))
+    
     # Generation settings
     DEFAULT_MAX_TOKENS = int(os.getenv("KERNELBENCH_DEFAULT_MAX_TOKENS", "4096"))
     DEFAULT_TEMPERATURE = float(os.getenv("KERNELBENCH_DEFAULT_TEMPERATURE", "0.0"))

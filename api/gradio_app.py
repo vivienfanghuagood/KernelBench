@@ -423,8 +423,19 @@ class KernelBenchGradioApp:
                 msg = f"✅ Request `{request_id[:12]}...` loaded successfully"
                 return (ref_code, generated_kernel, eval_result, error_message, msg)
             elif status == "failed":
+                # For failed requests, still load ref_code, generated_kernel (last attempt), and error
+                ref_code = status_data.get("ref_arch_src", "No reference code")
+                generated_kernel = status_data.get("generated_kernel", "No kernel generated (all attempts failed)")
                 error_msg = status_data.get("error_message", "Unknown error")
-                return ("", "", "", error_msg, f"❌ Request failed: {error_msg}")
+                eval_result = self.format_eval_results(status_data.get("eval_result", "")) if status_data.get("eval_result") else ""
+                
+                # Show retry information if available
+                current_retry = status_data.get("current_retry", 0)
+                max_retries = status_data.get("max_retries", 0)
+                retry_info = f"\n\n**Total Attempts:** {current_retry + 1}/{max_retries + 1}" if max_retries > 0 else ""
+                
+                msg = f"❌ Request failed after all attempts{retry_info}"
+                return (ref_code, generated_kernel, eval_result, error_msg, msg)
             else:
                 return ("", "", "", "", f"⏳ Request is still {status}")
                 

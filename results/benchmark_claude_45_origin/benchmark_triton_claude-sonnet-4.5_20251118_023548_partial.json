@@ -1,0 +1,33 @@
+[
+  {
+    "sample_name": "10_3D_tensor_matrix_multiplication",
+    "filename": "10_3D_tensor_matrix_multiplication.py",
+    "level": "level1",
+    "backend": "triton",
+    "gpu_arch": "4090",
+    "model_name": "claude-sonnet-4.5",
+    "server_type": "anthropic",
+    "custom_prompt": "",
+    "timestamp": "2025-11-18T02:35:17.343723",
+    "request_id": "d32aa60c-a225-4bb9-8e30-3846661a598f",
+    "status": "failed",
+    "compiled": null,
+    "correctness": null,
+    "runtime": null,
+    "runtime_mean": null,
+    "runtime_std": null,
+    "runtime_min": null,
+    "runtime_max": null,
+    "ref_runtime": null,
+    "ref_runtime_mean": null,
+    "ref_runtime_std": null,
+    "ref_runtime_min": null,
+    "ref_runtime_max": null,
+    "speedup": null,
+    "num_trials": null,
+    "hardware": null,
+    "device": null,
+    "error_message": "All 1 attempts failed. Last error: Evaluation failed: CUDA is not available, cannot run Eval\nTraceback (most recent call last):\n  File \"/root/KernelBench/api/service.py\", line 346, in _worker_generate_kernel\n    eval_result = eval_kernel_against_ref(\n                  ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/root/KernelBench/src/eval.py\", line 502, in eval_kernel_against_ref\n    assert torch.cuda.is_available(), \"CUDA is not available, cannot run Eval\"\n           ^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: CUDA is not available, cannot run Eval\n",
+    "total_time_seconds": 20.01031756401062
+  }
+]

@@ -172,6 +172,7 @@ Please analyze the performance bottleneck and generate an OPTIMIZED version that
 3. Implements the optimization strategies mentioned above
 4. Uses hardware-specific optimizations for the target GPU architecture
 
+You MUST guarantee the correctness of ModelNew. Do NOT cheat by simplifying logic or skipping computations. Do NOT directly and totally use PyTorch native operators to implement the forward function(just like original Pytorch version).
 Generate the optimized kernel code:"""
     
     return optimization_prompt
@@ -362,9 +363,9 @@ def _worker_generate_kernel(request_id: str, repo_top_dir: str):
                         best_correct_eval_result_str = final_eval_result_str
                 
                 # Check if generation was successful
-                # Success criteria: correctness=True AND compiled=True AND speedup > 1.0
+                # Success criteria: correctness=True AND compiled=True AND speedup > 1.1
                 # Continue optimization if speedup <= 1.0
-                if eval_result.correctness and eval_result.compiled and eval_result.speedup > 1.0:
+                if eval_result.correctness and eval_result.compiled and eval_result.speedup > 1.1:
                     # Success! Correct and faster than reference
                     retry_history.append({
                         'attempt': attempt,

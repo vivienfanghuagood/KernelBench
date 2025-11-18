@@ -1,0 +1,45 @@
+sample_name,filename,level,backend,gpu_arch,model_name,server_type,custom_prompt,timestamp,request_id,status,compiled,correctness,runtime,runtime_mean,runtime_std,runtime_min,runtime_max,ref_runtime,ref_runtime_mean,ref_runtime_std,ref_runtime_min,ref_runtime_max,speedup,num_trials,hardware,device,error_message,total_time_seconds
+99_Matmul_GELU_Softmax,99_Matmul_GELU_Softmax.py,level2,triton,4090,claude-sonnet-4.5,anthropic,"
+###You must gurantee the correctness of ModelNew, NOT cheating.###
+### **Important Constraints**
+1. **Allowed math functions:** `exp`, `log`, `sqrt`, `rsqrt`, `sin`, `cos`, `sigmoid`, `softmax`, `relu`, `gelu`, `tanh` *(implemented manually if needed, not via `tl.tanh`)*.  
+2. **Disallowed / Missing APIs:**  
+   - ❌ `tl.tanh`, `tl.astype`, `tl.floor_div`, `tl.floor_divide`, `tl.full_like`  
+   - ❌ `tl.sum(where=...)` — Triton `tl.sum` does **not** support `where`.  
+   - ❌ `program_id(axis=3)` — Triton supports only 3D grids (axes 0,1,2).  
+3. **Substitutions:**  
+   - Use `tl.math.tanh(x)` → replace with `(tl.exp(2*x) - 1) / (tl.exp(2*x) + 1)`  
+   - Replace `.astype()` with `.to(dtype)`  
+   - Replace floor division with: `tl.math.floor(x / y)`  
+   - Replace `tl.full_like(x, v)` with `tl.zeros_like(x) + v`  
+4. **Memory & typing rules:**  
+   - `tl.store` target must be a scalar or contiguous pointer; block tensors cannot be stored directly.  
+   - `tl.arange` arguments must be **compile-time constexpr**.  
+5. Ensure the generated kernel compiles without syntax errors or undefined functions. 
+6. Keep in mind in current GPU(AMD MI300x), **Shared memory per block ≤ **65536 bytes**, Be sure to configure parameters such as num_stage and block size carefully so shared memory stays within limits.  
+7. To make good performance, you can use autotune to each triton kernel, like this: @triton.autotune(
+    configs=[
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 32, 'num_warps': 8, 'num_stages': 3}),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 64, 'num_warps': 8, 'num_stages': 2}),
+        triton.Config({'BLOCK_M': 64,  'BLOCK_N': 128, 'BLOCK_K': 64, 'num_warps': 8, 'num_stages': 3}),
+        triton.Config({'BLOCK_M': 64,  'BLOCK_N': 64,  'BLOCK_K': 64, 'num_warps': 4, 'num_stages': 3}),
+    ],
+    key=['M','N','K'],
+)
+keep in mind these parameters are suitable for AMD MI300x.
+8. Careful when using some ops like `tl.exp` and datatypes is fp16, maybe you should cast to fp32 to make it correct.
+",2025-11-15T01:52:40.064946,b0bf6098-58ec-449f-99af-878a1c51bd5e,completed,,,,,,,,,,,,,,,,,"Traceback (most recent call last):
+  File ""/root/KernelBench/api/service.py"", line 112, in _worker_generate_kernel
+    eval_result = eval_kernel_against_ref(
+                  ^^^^^^^^^^^^^^^^^^^^^^^^
+  File ""/root/KernelBench/src/eval.py"", line 688, in eval_kernel_against_ref
+    if verbose:
+       ^^^^^^^
+  File ""/usr/lib/python3.12/bdb.py"", line 90, in trace_dispatch
+    return self.dispatch_line(frame)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File ""/usr/lib/python3.12/bdb.py"", line 115, in dispatch_line
+    if self.quitting: raise BdbQuit
+                      ^^^^^^^^^^^^^
+bdb.BdbQuit
+",40.01326298713684

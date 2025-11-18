@@ -1,0 +1,61 @@
+sample_name,filename,level,backend,gpu_arch,model_name,server_type,custom_prompt,timestamp,request_id,status,compiled,correctness,runtime,runtime_mean,runtime_std,runtime_min,runtime_max,ref_runtime,ref_runtime_mean,ref_runtime_std,ref_runtime_min,ref_runtime_max,speedup,num_trials,hardware,device,error_message,total_time_seconds
+99_Matmul_GELU_Softmax,99_Matmul_GELU_Softmax.py,level2,triton,4090,claude-sonnet-4.5,anthropic,"
+###You must gurantee the correctness of ModelNew, NOT cheating.###
+### **Important Constraints**
+1. **Allowed math functions:** `exp`, `log`, `sqrt`, `rsqrt`, `sin`, `cos`, `sigmoid`, `softmax`, `relu`, `gelu`, `tanh` *(implemented manually if needed, not via `tl.tanh`)*.  
+2. **Disallowed / Missing APIs:**  
+   - ❌ `tl.tanh`, `tl.astype`, `tl.floor_div`, `tl.floor_divide`, `tl.full_like`  
+   - ❌ `tl.sum(where=...)` — Triton `tl.sum` does **not** support `where`.  
+   - ❌ `program_id(axis=3)` — Triton supports only 3D grids (axes 0,1,2).  
+3. **Substitutions:**  
+   - Use `tl.math.tanh(x)` → replace with `(tl.exp(2*x) - 1) / (tl.exp(2*x) + 1)`  
+   - Replace `.astype()` with `.to(dtype)`  
+   - Replace floor division with: `tl.math.floor(x / y)`  
+   - Replace `tl.full_like(x, v)` with `tl.zeros_like(x) + v`  
+4. **Memory & typing rules:**  
+   - `tl.store` target must be a scalar or contiguous pointer; block tensors cannot be stored directly.  
+   - `tl.arange` arguments must be **compile-time constexpr**.  
+5. Ensure the generated kernel compiles without syntax errors or undefined functions. 
+6. Keep in mind in current GPU(AMD MI300x), **Shared memory per block ≤ **65536 bytes**, Be sure to configure parameters such as num_stage and block size carefully so shared memory stays within limits.  
+7. To make good performance, you can use autotune to each triton kernel, like this: @triton.autotune(
+    configs=[
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 32, 'num_warps': 8, 'num_stages': 3}),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 64, 'num_warps': 8, 'num_stages': 2}),
+        triton.Config({'BLOCK_M': 64,  'BLOCK_N': 128, 'BLOCK_K': 64, 'num_warps': 8, 'num_stages': 3}),
+        triton.Config({'BLOCK_M': 64,  'BLOCK_N': 64,  'BLOCK_K': 64, 'num_warps': 4, 'num_stages': 3}),
+    ],
+    key=['M','N','K'],
+)
+keep in mind these parameters are suitable for AMD MI300x.
+8. Careful when using some ops like `tl.exp` and datatypes is fp16, maybe you should cast to fp32 to make it correct.
+",2025-11-15T02:04:01.036756,59c95f8b-8f81-42e8-90b1-a58f5ddaf1a0,completed,True,False,,,,,,,,,,,,,,,"Correctness check failed. Metadata: {'hardware': 'AMD Instinct MI300X', 'device': '0', 'max_difference': ['0.033783', '0.037781', '0.033905'], 'avg_difference': ['0.007690', '0.007690', '0.007690'], 'correctness_issue': 'Output mismatch', 'correctness_trials': '(0 / 3)'}",40.0121214389801
+9_Matmul_Subtract_Multiply_ReLU,9_Matmul_Subtract_Multiply_ReLU.py,level2,triton,4090,claude-sonnet-4.5,anthropic,"
+###You must gurantee the correctness of ModelNew, NOT cheating.###
+### **Important Constraints**
+1. **Allowed math functions:** `exp`, `log`, `sqrt`, `rsqrt`, `sin`, `cos`, `sigmoid`, `softmax`, `relu`, `gelu`, `tanh` *(implemented manually if needed, not via `tl.tanh`)*.  
+2. **Disallowed / Missing APIs:**  
+   - ❌ `tl.tanh`, `tl.astype`, `tl.floor_div`, `tl.floor_divide`, `tl.full_like`  
+   - ❌ `tl.sum(where=...)` — Triton `tl.sum` does **not** support `where`.  
+   - ❌ `program_id(axis=3)` — Triton supports only 3D grids (axes 0,1,2).  
+3. **Substitutions:**  
+   - Use `tl.math.tanh(x)` → replace with `(tl.exp(2*x) - 1) / (tl.exp(2*x) + 1)`  
+   - Replace `.astype()` with `.to(dtype)`  
+   - Replace floor division with: `tl.math.floor(x / y)`  
+   - Replace `tl.full_like(x, v)` with `tl.zeros_like(x) + v`  
+4. **Memory & typing rules:**  
+   - `tl.store` target must be a scalar or contiguous pointer; block tensors cannot be stored directly.  
+   - `tl.arange` arguments must be **compile-time constexpr**.  
+5. Ensure the generated kernel compiles without syntax errors or undefined functions. 
+6. Keep in mind in current GPU(AMD MI300x), **Shared memory per block ≤ **65536 bytes**, Be sure to configure parameters such as num_stage and block size carefully so shared memory stays within limits.  
+7. To make good performance, you can use autotune to each triton kernel, like this: @triton.autotune(
+    configs=[
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 32, 'num_warps': 8, 'num_stages': 3}),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 64, 'num_warps': 8, 'num_stages': 2}),
+        triton.Config({'BLOCK_M': 64,  'BLOCK_N': 128, 'BLOCK_K': 64, 'num_warps': 8, 'num_stages': 3}),
+        triton.Config({'BLOCK_M': 64,  'BLOCK_N': 64,  'BLOCK_K': 64, 'num_warps': 4, 'num_stages': 3}),
+    ],
+    key=['M','N','K'],
+)
+keep in mind these parameters are suitable for AMD MI300x.
+8. Careful when using some ops like `tl.exp` and datatypes is fp16, maybe you should cast to fp32 to make it correct.
+",2025-11-15T02:04:46.049750,f1c49f06-83d3-423f-875a-d5ca2fe6ca9f,completed,True,True,0.487,0.487,0.0324,0.448,0.563,0.343,0.343,0.0232,0.311,0.39,0.7043121149897331,50,,,,40.01346492767334

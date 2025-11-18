@@ -12,7 +12,7 @@ class Model(nn.Module):
 batch_size = 32
 num_heads = 32
 sequence_length = 512
-embedding_dimension = 1024
+embedding_dimension = 128
 
 def get_inputs():
     Q = torch.rand(batch_size, num_heads, sequence_length, embedding_dimension, device='cuda', dtype=torch.float16)

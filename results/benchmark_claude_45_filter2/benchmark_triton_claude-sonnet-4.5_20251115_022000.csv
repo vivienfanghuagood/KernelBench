@@ -1,0 +1,141 @@
+sample_name,filename,level,backend,gpu_arch,model_name,server_type,custom_prompt,timestamp,request_id,status,compiled,correctness,runtime,runtime_mean,runtime_std,runtime_min,runtime_max,ref_runtime,ref_runtime_mean,ref_runtime_std,ref_runtime_min,ref_runtime_max,speedup,num_trials,hardware,device,error_message,total_time_seconds
+99_Matmul_GELU_Softmax,99_Matmul_GELU_Softmax.py,level2,triton,4090,claude-sonnet-4.5,anthropic,"
+### You must guarantee the correctness of `ModelNew`. No cheating.
+
+## **Important Constraints**
+
+### 1. Allowed Math Functions
+You may use:
+`exp`, `log`, `sqrt`, `rsqrt`, `sin`, `cos`, `sigmoid`, `softmax`, `relu`, `gelu`, `tanh`  
+(*`tanh` must be implemented manually; do **not** call `tl.tanh or tl.math.tanh`*)
+
+
+### 2. Disallowed / Missing Triton APIs
+The following APIs **must not appear** in the generated kernel:
+
+- `tl.tanh` and `tl.math.tanh`
+- `tl.astype`
+- `tl.floor_div`, `tl.floor_divide`
+- `tl.full_like`
+- `tl.sum(where=...)` (unsupported)
+- `program_id(axis=3)` (Triton supports only axes **0, 1, 2**)
+
+### 3. Required Substitutions (Mandatory Rewrite Rules)
+- `tanh(x)` →  
+  `(tl.exp(2 * x) - 1) / (tl.exp(2 * x) + 1)`
+- `.astype(dst_dtype)` → `.to(dst_dtype)`
+- `floor_div` →  
+  `tl.math.floor(x / y)`
+- `tl.full_like(x, v)` →  
+  `tl.zeros_like(x) + v`
+
+### 4. Memory & Typing Rules
+- `tl.store` destination **must not be a block pointer**; it must be a scalar or contiguous region.
+- All arguments to `tl.arange` must be **compile-time constexpr**.
+- Ensure correct dtype behavior:
+  - For numerically sensitive ops (e.g., softmax, GELU), **cast FP16/BF16 values to FP32** before `exp`, `log`, `rsqrt`, etc.
+
+### 5. Compilation Requirements
+- The generated Triton kernel must compile **without syntax errors**, **without calling undefined functions**, and **without referencing unsupported APIs**.
+
+### 6. Shared Memory Limits (AMD MI300x)
+- Maximum shared memory **≤ 65536 bytes per block**.
+- Choose `BLOCK_SIZE`, `num_stages`, etc., to stay within this limit.
+- Make sure tiling strategies respect MI300x architectural constraints.
+
+### 7. Performance Requirements
+- Use `@triton.autotune` for each kernel.
+- Tuning ranges should be designed for **AMD MI300x** (block sizes, warps, num_stages).
+- Avoid unnecessary casts inside the inner loop.
+- Prefer data reuse patterns that minimize memory bandwidth pressure.
+
+### 8. FP16/BF16 Numerical Stability
+- Before expensive math (`exp`, `tanh`, `softmax`, `gelu`), cast inputs to `fp32`.
+- Accumulate in FP32 when appropriate.
+
+### 9. Weight Preprocessing
+- All weight preprocessing (transpose / reshape / contiguous transformations) must happen in `__init__`.
+- The forward path must **not** perform weight layout transformations.
+
+### 10. Special Functions (GELU / Softmax / Swish)
+- Implement these carefully to ensure correctness.
+- Prefer numerically stable Triton patterns.
+- Avoid shortcuts that reduce accuracy.
+- FP32 computations are encouraged for the critical parts.
+
+*Follow all constraints strictly when generating Triton kernels.*
+",2025-11-15T02:20:00.527606,5bcf6e38-003c-4836-b386-021954c9e2e1,completed,True,False,,,,,,,,,,,,,,,"Correctness check failed. Metadata: {'hardware': 'AMD Instinct MI300X', 'device': '0', 'max_difference': ['1.565430', '1.675781', '1.541016'], 'avg_difference': ['0.117310', '0.131714', '0.131592'], 'correctness_issue': 'Output mismatch', 'correctness_trials': '(0 / 3)'}",40.01064372062683
+9_Matmul_Subtract_Multiply_ReLU,9_Matmul_Subtract_Multiply_ReLU.py,level2,triton,4090,claude-sonnet-4.5,anthropic,"
+### You must guarantee the correctness of `ModelNew`. No cheating.
+
+## **Important Constraints**
+
+### 1. Allowed Math Functions
+You may use:
+`exp`, `log`, `sqrt`, `rsqrt`, `sin`, `cos`, `sigmoid`, `softmax`, `relu`, `gelu`, `tanh`  
+(*`tanh` must be implemented manually; do **not** call `tl.tanh or tl.math.tanh`*)
+
+
+### 2. Disallowed / Missing Triton APIs
+The following APIs **must not appear** in the generated kernel:
+
+- `tl.tanh` and `tl.math.tanh`
+- `tl.astype`
+- `tl.floor_div`, `tl.floor_divide`
+- `tl.full_like`
+- `tl.sum(where=...)` (unsupported)
+- `program_id(axis=3)` (Triton supports only axes **0, 1, 2**)
+
+### 3. Required Substitutions (Mandatory Rewrite Rules)
+- `tanh(x)` →  
+  `(tl.exp(2 * x) - 1) / (tl.exp(2 * x) + 1)`
+- `.astype(dst_dtype)` → `.to(dst_dtype)`
+- `floor_div` →  
+  `tl.math.floor(x / y)`
+- `tl.full_like(x, v)` →  
+  `tl.zeros_like(x) + v`
+
+### 4. Memory & Typing Rules
+- `tl.store` destination **must not be a block pointer**; it must be a scalar or contiguous region.
+- All arguments to `tl.arange` must be **compile-time constexpr**.
+- Ensure correct dtype behavior:
+  - For numerically sensitive ops (e.g., softmax, GELU), **cast FP16/BF16 values to FP32** before `exp`, `log`, `rsqrt`, etc.
+
+### 5. Compilation Requirements
+- The generated Triton kernel must compile **without syntax errors**, **without calling undefined functions**, and **without referencing unsupported APIs**.
+
+### 6. Shared Memory Limits (AMD MI300x)
+- Maximum shared memory **≤ 65536 bytes per block**.
+- Choose `BLOCK_SIZE`, `num_stages`, etc., to stay within this limit.
+- Make sure tiling strategies respect MI300x architectural constraints.
+
+### 7. Performance Requirements
+- Use `@triton.autotune` for each kernel.
+- Tuning ranges should be designed for **AMD MI300x** (block sizes, warps, num_stages).
+- Avoid unnecessary casts inside the inner loop.
+- Prefer data reuse patterns that minimize memory bandwidth pressure.
+
+### 8. FP16/BF16 Numerical Stability
+- Before expensive math (`exp`, `tanh`, `softmax`, `gelu`), cast inputs to `fp32`.
+- Accumulate in FP32 when appropriate.
+
+### 9. Weight Preprocessing
+- All weight preprocessing (transpose / reshape / contiguous transformations) must happen in `__init__`.
+- The forward path must **not** perform weight layout transformations.
+
+### 10. Special Functions (GELU / Softmax / Swish)
+- Implement these carefully to ensure correctness.
+- Prefer numerically stable Triton patterns.
+- Avoid shortcuts that reduce accuracy.
+- FP32 computations are encouraged for the critical parts.
+
+*Follow all constraints strictly when generating Triton kernels.*
+",2025-11-15T02:20:45.538961,faf8b68d-8947-4787-8880-a62d6f3496e9,completed,,,,,,,,,,,,,,,,,"Traceback (most recent call last):
+  File ""/root/KernelBench/api/service.py"", line 112, in _worker_generate_kernel
+    eval_result = eval_kernel_against_ref(
+                  ^^^^^^^^^^^^^^^^^^^^^^^^
+  File ""/root/KernelBench/src/eval.py"", line 679, in eval_kernel_against_ref
+    assert len(params1) == len(params2), f""Parameter count mismatch: {len(params1)} vs {len(params2)}""
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Parameter count mismatch: 2 vs 3
+",60.01452088356018

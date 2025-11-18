@@ -180,7 +180,8 @@ class BenchmarkRunner:
         max_tokens: int = 4096,
         temperature: float = 0.0,
         custom_prompt: Optional[str] = None,
-        problem_name: Optional[str] = None
+        problem_name: Optional[str] = None,
+        max_retries: int = 3
     ) -> Optional[str]:
         """Submit a generation request and return request_id"""
         try:
@@ -193,7 +194,8 @@ class BenchmarkRunner:
                 "max_tokens": max_tokens,
                 "temperature": temperature,
                 "custom_prompt": custom_prompt if custom_prompt and custom_prompt.strip() else None,
-                "problem_name": problem_name if problem_name and problem_name.strip() else None
+                "problem_name": problem_name if problem_name and problem_name.strip() else None,
+                "max_retries": max_retries
             }
             
             response = requests.post(
@@ -365,7 +367,8 @@ class BenchmarkRunner:
         server_type: str = "openai",
         max_tokens: int = 4096,
         temperature: float = 0.0,
-        custom_prompt: Optional[str] = None
+        custom_prompt: Optional[str] = None,
+        max_retries: int = 3
     ) -> Dict[str, Any]:
         """Process a single sample and return the results"""
         print(f"\n{'='*80}")
@@ -416,7 +419,8 @@ class BenchmarkRunner:
             max_tokens=max_tokens,
             temperature=temperature,
             custom_prompt=custom_prompt,
-            problem_name=sample['name']  # Use sample name as problem_name
+            problem_name=sample['name'],  # Use sample name as problem_name
+            max_retries=max_retries
         )
         
         if not request_id:
@@ -501,7 +505,8 @@ class BenchmarkRunner:
         custom_prompt: Optional[str] = None,
         output_dir: str = "results/benchmark",
         start_from: Optional[str] = None,
-        limit: Optional[int] = None
+        limit: Optional[int] = None,
+        max_retries: int = 3
     ):
         """Run benchmark on all samples"""
         print("🚀 Starting Benchmark Run")
@@ -557,7 +562,8 @@ class BenchmarkRunner:
                 server_type=server_type,
                 max_tokens=max_tokens,
                 temperature=temperature,
-                custom_prompt=custom_prompt
+                custom_prompt=custom_prompt,
+                max_retries=max_retries
             )
             
             self.results.append(result)
@@ -658,6 +664,8 @@ def main():
                         help="Start from specific sample name (e.g., '50_conv_standard_2D__square_input__square_kernel')")
     parser.add_argument("--limit", type=int, default=None,
                         help="Limit number of samples to process")
+    parser.add_argument("--max-retries", type=int, default=3,
+                        help="Maximum number of retries on failure (default: 3)")
     
     args = parser.parse_args()
     
@@ -674,7 +682,8 @@ def main():
             custom_prompt=args.custom_prompt,
             output_dir=args.output_dir,
             start_from=args.start_from,
-            limit=args.limit
+            limit=args.limit,
+            max_retries=args.max_retries
         )
     except KeyboardInterrupt:
         print("\n\n⚠️ Benchmark interrupted by user")

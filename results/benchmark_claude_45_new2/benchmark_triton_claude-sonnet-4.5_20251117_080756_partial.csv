@@ -1,0 +1,1652 @@
+sample_name,filename,level,backend,gpu_arch,model_name,server_type,custom_prompt,timestamp,request_id,status,compiled,correctness,runtime,runtime_mean,runtime_std,runtime_min,runtime_max,ref_runtime,ref_runtime_mean,ref_runtime_std,ref_runtime_min,ref_runtime_max,speedup,num_trials,hardware,device,error_message,total_time_seconds
+10_3D_tensor_matrix_multiplication,10_3D_tensor_matrix_multiplication.py,level1,triton,4090,claude-sonnet-4.5,anthropic,"
+### **CRITICAL: CORRECTNESS FIRST, PERFORMANCE SECOND** ###
+You MUST guarantee the correctness of ModelNew. Do NOT cheat by simplifying logic or skipping computations.
+
+### **Common Errors to AVOID** ###
+
+**ERROR 1: Numerical Accuracy Issues (GELU, Normalization, Softmax)**
+- ❌ WRONG: Using fp16 directly for `tl.exp()`, `tl.log()`, or complex math operations
+- ✅ CORRECT: Always cast to fp32 for intermediate calculations, then cast back:
+  ```python
+  # For GELU, Softmax, LayerNorm, RMSNorm, etc.
+  x_fp32 = x.to(tl.float32)
+  result = compute_with_exp_log(x_fp32)  # Do math in fp32
+  output = result.to(input_dtype)  # Cast back to original dtype
+  ```
+- For normalization operations (LayerNorm, RMSNorm, BatchNorm):
+  * Compute mean and variance in fp32
+  * Use numerically stable formulas: `variance = E[x²] - E[x]²`
+  * Add epsilon BEFORE sqrt: `rsqrt(variance + eps)`
+
+**ERROR 2: Missing @triton.jit Decorator**
+- ❌ WRONG: Helper functions without decorator that use Triton operations
+  ```python
+  def helper(x):  # Missing decorator!
+      return tl.exp(x)
+  ```
+- ✅ CORRECT: Add `@triton.jit` to ALL functions using Triton ops:
+  ```python
+  @triton.jit
+  def helper(x):
+      return tl.exp(x)
+  ```
+
+**ERROR 3: Invalid Triton APIs**
+- ❌ FORBIDDEN APIs (do NOT use):
+  * `tl.math.tanh` → Use: `(tl.exp(2*x) - 1) / (tl.exp(2*x) + 1)`
+  * `tl.tanh` → Same as above
+  * `tl.astype()` → Use: `.to(dtype)`
+  * `tl.floor_div`, `tl.floor_divide` → Use: `tl.math.floor(x / y)` or `x // y`
+  * `tl.full_like(x, v)` → Use: `tl.zeros_like(x) + v`
+  * `tl.sum(x, where=...)` → NOT supported, use masking: `tl.sum(tl.where(mask, x, 0))`
+  * `tl.program_id(axis=3)` → Only axes 0,1,2 supported (3D grid max)
+
+**ERROR 4: Tensor Indexing Issues**
+- ❌ WRONG: Using scalar indices on multi-dimensional tensors
+  ```python
+  qk += Q_block[:, k][:, None] * K_block[None, :, k]  # k is int32 scalar!
+  ```
+- ✅ CORRECT: Use proper slicing or tl.arange for indexing:
+  ```python
+  # Option 1: Expand dimensions properly
+  q_vec = tl.load(Q_ptr + row_idx * stride + k)  # Load as 1D
+  k_vec = tl.load(K_ptr + k * stride + col_idx)
+  qk += q_vec[:, None] * k_vec[None, :]
+  
+  # Option 2: Use range-based indexing
+  k_range = tl.arange(0, BLOCK_K) + k
+  Q_slice = tl.load(Q_ptr + row_idx[:, None] * stride + k_range[None, :])
+  ```
+
+**ERROR 5: Control Flow Restrictions**
+- ❌ FORBIDDEN: `continue` and `break` statements in Triton kernels
+  ```python
+  for i in range(N):
+      if condition:
+          continue  # NOT ALLOWED!
+  ```
+- ✅ CORRECT: Use conditional execution with tl.where or restructure logic:
+  ```python
+  for i in range(N):
+      mask = condition
+      result = tl.where(mask, compute_A(x), compute_B(x))
+  ```
+
+### **Mandatory Rules for Correctness** ###
+
+1. **Dtype Handling:**
+   - Cast to fp32 for: exp, log, sqrt, rsqrt, division, complex math
+   - Keep original dtype for: loads, stores, simple add/multiply
+   - Pattern: `input.to(tl.float32)` → compute → `.to(original_dtype)`
+
+2. **Triton Decorator Requirements:**
+   - ALWAYS add `@triton.jit` before any function using Triton language ops
+   - Include `@triton.autotune` for performance optimization (optional but recommended)
+   - All helper functions called from kernel need `@triton.jit`
+
+3. **Memory and Indexing:**
+   - `tl.arange()` arguments must be compile-time constants
+   - Use contiguous pointers for `tl.store`, not block tensors directly
+   - Apply bounds checking: `mask = (idx < N)` before load/store
+   - For multi-dimensional indexing, use explicit offset calculations
+
+4. **Numerical Stability:**
+   - GELU: Use `0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))` in fp32
+   - Softmax: Subtract max before exp: `exp(x - max(x))`
+   - LayerNorm/RMSNorm: Compute statistics in fp32, add epsilon before rsqrt
+   - Use `tl.math.fast_dividef` only when accuracy loss is acceptable
+
+5. **Control Flow:**
+   - Replace `continue` with conditional masks
+   - Replace `break` with early termination flags and tl.where
+   - Avoid Python control flow depending on Triton runtime values
+
+6. **Hardware Constraints (AMD MI300x):**
+   - Shared memory per block: ≤ 65536 bytes
+   - Configure BLOCK_SIZE, num_stages, num_warps carefully
+   - Use `@triton.autotune` to find optimal configs
+
+7. **Weight Preprocessing:**
+   - In `__init__`: transpose, reshape, convert weights to optimal layout
+   - In `forward`: avoid dynamic transpose/reshape operations
+   - Store preprocessed weights as nn.Parameter or buffers
+
+### **Verification Checklist** ###
+Before submitting ModelNew, verify:
+- [ ] All Triton functions have `@triton.jit` decorator
+- [ ] No use of forbidden APIs (tl.math.tanh, tl.astype, etc.)
+- [ ] Floating-point ops use fp32 intermediate precision
+- [ ] Tensor indexing uses proper dimensions (no scalar index on 2D tensor)
+- [ ] No `break` or `continue` statements
+- [ ] Bounds checking with masks before load/store
+- [ ] Numerical computations match reference implementation exactly
+- [ ] Memory usage within hardware limits
+
+### **Priority: CORRECTNESS > PERFORMANCE** ###
+If unsure, choose the more numerically stable and correct approach over performance optimization.
+",2025-11-17T07:46:55.151334,85ba10b2-b512-4b07-85d9-ea61ed63d2f2,completed,True,True,0.231,0.231,0.0144,0.211,0.264,0.127,0.127,0.013,0.106,0.182,0.5497835497835498,50,,,,40.0116240978241
+11_4D_tensor_matrix_multiplication,11_4D_tensor_matrix_multiplication.py,level1,triton,4090,claude-sonnet-4.5,anthropic,"
+### **CRITICAL: CORRECTNESS FIRST, PERFORMANCE SECOND** ###
+You MUST guarantee the correctness of ModelNew. Do NOT cheat by simplifying logic or skipping computations.
+
+### **Common Errors to AVOID** ###
+
+**ERROR 1: Numerical Accuracy Issues (GELU, Normalization, Softmax)**
+- ❌ WRONG: Using fp16 directly for `tl.exp()`, `tl.log()`, or complex math operations
+- ✅ CORRECT: Always cast to fp32 for intermediate calculations, then cast back:
+  ```python
+  # For GELU, Softmax, LayerNorm, RMSNorm, etc.
+  x_fp32 = x.to(tl.float32)
+  result = compute_with_exp_log(x_fp32)  # Do math in fp32
+  output = result.to(input_dtype)  # Cast back to original dtype
+  ```
+- For normalization operations (LayerNorm, RMSNorm, BatchNorm):
+  * Compute mean and variance in fp32
+  * Use numerically stable formulas: `variance = E[x²] - E[x]²`
+  * Add epsilon BEFORE sqrt: `rsqrt(variance + eps)`
+
+**ERROR 2: Missing @triton.jit Decorator**
+- ❌ WRONG: Helper functions without decorator that use Triton operations
+  ```python
+  def helper(x):  # Missing decorator!
+      return tl.exp(x)
+  ```
+- ✅ CORRECT: Add `@triton.jit` to ALL functions using Triton ops:
+  ```python
+  @triton.jit
+  def helper(x):
+      return tl.exp(x)
+  ```
+
+**ERROR 3: Invalid Triton APIs**
+- ❌ FORBIDDEN APIs (do NOT use):
+  * `tl.math.tanh` → Use: `(tl.exp(2*x) - 1) / (tl.exp(2*x) + 1)`
+  * `tl.tanh` → Same as above
+  * `tl.astype()` → Use: `.to(dtype)`
+  * `tl.floor_div`, `tl.floor_divide` → Use: `tl.math.floor(x / y)` or `x // y`
+  * `tl.full_like(x, v)` → Use: `tl.zeros_like(x) + v`
+  * `tl.sum(x, where=...)` → NOT supported, use masking: `tl.sum(tl.where(mask, x, 0))`
+  * `tl.program_id(axis=3)` → Only axes 0,1,2 supported (3D grid max)
+
+**ERROR 4: Tensor Indexing Issues**
+- ❌ WRONG: Using scalar indices on multi-dimensional tensors
+  ```python
+  qk += Q_block[:, k][:, None] * K_block[None, :, k]  # k is int32 scalar!
+  ```
+- ✅ CORRECT: Use proper slicing or tl.arange for indexing:
+  ```python
+  # Option 1: Expand dimensions properly
+  q_vec = tl.load(Q_ptr + row_idx * stride + k)  # Load as 1D
+  k_vec = tl.load(K_ptr + k * stride + col_idx)
+  qk += q_vec[:, None] * k_vec[None, :]
+  
+  # Option 2: Use range-based indexing
+  k_range = tl.arange(0, BLOCK_K) + k
+  Q_slice = tl.load(Q_ptr + row_idx[:, None] * stride + k_range[None, :])
+  ```
+
+**ERROR 5: Control Flow Restrictions**
+- ❌ FORBIDDEN: `continue` and `break` statements in Triton kernels
+  ```python
+  for i in range(N):
+      if condition:
+          continue  # NOT ALLOWED!
+  ```
+- ✅ CORRECT: Use conditional execution with tl.where or restructure logic:
+  ```python
+  for i in range(N):
+      mask = condition
+      result = tl.where(mask, compute_A(x), compute_B(x))
+  ```
+
+### **Mandatory Rules for Correctness** ###
+
+1. **Dtype Handling:**
+   - Cast to fp32 for: exp, log, sqrt, rsqrt, division, complex math
+   - Keep original dtype for: loads, stores, simple add/multiply
+   - Pattern: `input.to(tl.float32)` → compute → `.to(original_dtype)`
+
+2. **Triton Decorator Requirements:**
+   - ALWAYS add `@triton.jit` before any function using Triton language ops
+   - Include `@triton.autotune` for performance optimization (optional but recommended)
+   - All helper functions called from kernel need `@triton.jit`
+
+3. **Memory and Indexing:**
+   - `tl.arange()` arguments must be compile-time constants
+   - Use contiguous pointers for `tl.store`, not block tensors directly
+   - Apply bounds checking: `mask = (idx < N)` before load/store
+   - For multi-dimensional indexing, use explicit offset calculations
+
+4. **Numerical Stability:**
+   - GELU: Use `0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))` in fp32
+   - Softmax: Subtract max before exp: `exp(x - max(x))`
+   - LayerNorm/RMSNorm: Compute statistics in fp32, add epsilon before rsqrt
+   - Use `tl.math.fast_dividef` only when accuracy loss is acceptable
+
+5. **Control Flow:**
+   - Replace `continue` with conditional masks
+   - Replace `break` with early termination flags and tl.where
+   - Avoid Python control flow depending on Triton runtime values
+
+6. **Hardware Constraints (AMD MI300x):**
+   - Shared memory per block: ≤ 65536 bytes
+   - Configure BLOCK_SIZE, num_stages, num_warps carefully
+   - Use `@triton.autotune` to find optimal configs
+
+7. **Weight Preprocessing:**
+   - In `__init__`: transpose, reshape, convert weights to optimal layout
+   - In `forward`: avoid dynamic transpose/reshape operations
+   - Store preprocessed weights as nn.Parameter or buffers
+
+### **Verification Checklist** ###
+Before submitting ModelNew, verify:
+- [ ] All Triton functions have `@triton.jit` decorator
+- [ ] No use of forbidden APIs (tl.math.tanh, tl.astype, etc.)
+- [ ] Floating-point ops use fp32 intermediate precision
+- [ ] Tensor indexing uses proper dimensions (no scalar index on 2D tensor)
+- [ ] No `break` or `continue` statements
+- [ ] Bounds checking with masks before load/store
+- [ ] Numerical computations match reference implementation exactly
+- [ ] Memory usage within hardware limits
+
+### **Priority: CORRECTNESS > PERFORMANCE** ###
+If unsure, choose the more numerically stable and correct approach over performance optimization.
+",2025-11-17T07:47:40.163790,512bead5-98c9-4e9d-aa67-104a87a45edd,completed,True,True,2.74,2.74,0.0256,2.68,2.8,1.18,1.18,0.0165,1.16,1.22,0.43065693430656926,50,,,,60.038334131240845
+12_Matmul_with_diagonal_matrices_,12_Matmul_with_diagonal_matrices_.py,level1,triton,4090,claude-sonnet-4.5,anthropic,"
+### **CRITICAL: CORRECTNESS FIRST, PERFORMANCE SECOND** ###
+You MUST guarantee the correctness of ModelNew. Do NOT cheat by simplifying logic or skipping computations.
+
+### **Common Errors to AVOID** ###
+
+**ERROR 1: Numerical Accuracy Issues (GELU, Normalization, Softmax)**
+- ❌ WRONG: Using fp16 directly for `tl.exp()`, `tl.log()`, or complex math operations
+- ✅ CORRECT: Always cast to fp32 for intermediate calculations, then cast back:
+  ```python
+  # For GELU, Softmax, LayerNorm, RMSNorm, etc.
+  x_fp32 = x.to(tl.float32)
+  result = compute_with_exp_log(x_fp32)  # Do math in fp32
+  output = result.to(input_dtype)  # Cast back to original dtype
+  ```
+- For normalization operations (LayerNorm, RMSNorm, BatchNorm):
+  * Compute mean and variance in fp32
+  * Use numerically stable formulas: `variance = E[x²] - E[x]²`
+  * Add epsilon BEFORE sqrt: `rsqrt(variance + eps)`
+
+**ERROR 2: Missing @triton.jit Decorator**
+- ❌ WRONG: Helper functions without decorator that use Triton operations
+  ```python
+  def helper(x):  # Missing decorator!
+      return tl.exp(x)
+  ```
+- ✅ CORRECT: Add `@triton.jit` to ALL functions using Triton ops:
+  ```python
+  @triton.jit
+  def helper(x):
+      return tl.exp(x)
+  ```
+
+**ERROR 3: Invalid Triton APIs**
+- ❌ FORBIDDEN APIs (do NOT use):
+  * `tl.math.tanh` → Use: `(tl.exp(2*x) - 1) / (tl.exp(2*x) + 1)`
+  * `tl.tanh` → Same as above
+  * `tl.astype()` → Use: `.to(dtype)`
+  * `tl.floor_div`, `tl.floor_divide` → Use: `tl.math.floor(x / y)` or `x // y`
+  * `tl.full_like(x, v)` → Use: `tl.zeros_like(x) + v`
+  * `tl.sum(x, where=...)` → NOT supported, use masking: `tl.sum(tl.where(mask, x, 0))`
+  * `tl.program_id(axis=3)` → Only axes 0,1,2 supported (3D grid max)
+
+**ERROR 4: Tensor Indexing Issues**
+- ❌ WRONG: Using scalar indices on multi-dimensional tensors
+  ```python
+  qk += Q_block[:, k][:, None] * K_block[None, :, k]  # k is int32 scalar!
+  ```
+- ✅ CORRECT: Use proper slicing or tl.arange for indexing:
+  ```python
+  # Option 1: Expand dimensions properly
+  q_vec = tl.load(Q_ptr + row_idx * stride + k)  # Load as 1D
+  k_vec = tl.load(K_ptr + k * stride + col_idx)
+  qk += q_vec[:, None] * k_vec[None, :]
+  
+  # Option 2: Use range-based indexing
+  k_range = tl.arange(0, BLOCK_K) + k
+  Q_slice = tl.load(Q_ptr + row_idx[:, None] * stride + k_range[None, :])
+  ```
+
+**ERROR 5: Control Flow Restrictions**
+- ❌ FORBIDDEN: `continue` and `break` statements in Triton kernels
+  ```python
+  for i in range(N):
+      if condition:
+          continue  # NOT ALLOWED!
+  ```
+- ✅ CORRECT: Use conditional execution with tl.where or restructure logic:
+  ```python
+  for i in range(N):
+      mask = condition
+      result = tl.where(mask, compute_A(x), compute_B(x))
+  ```
+
+### **Mandatory Rules for Correctness** ###
+
+1. **Dtype Handling:**
+   - Cast to fp32 for: exp, log, sqrt, rsqrt, division, complex math
+   - Keep original dtype for: loads, stores, simple add/multiply
+   - Pattern: `input.to(tl.float32)` → compute → `.to(original_dtype)`
+
+2. **Triton Decorator Requirements:**
+   - ALWAYS add `@triton.jit` before any function using Triton language ops
+   - Include `@triton.autotune` for performance optimization (optional but recommended)
+   - All helper functions called from kernel need `@triton.jit`
+
+3. **Memory and Indexing:**
+   - `tl.arange()` arguments must be compile-time constants
+   - Use contiguous pointers for `tl.store`, not block tensors directly
+   - Apply bounds checking: `mask = (idx < N)` before load/store
+   - For multi-dimensional indexing, use explicit offset calculations
+
+4. **Numerical Stability:**
+   - GELU: Use `0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))` in fp32
+   - Softmax: Subtract max before exp: `exp(x - max(x))`
+   - LayerNorm/RMSNorm: Compute statistics in fp32, add epsilon before rsqrt
+   - Use `tl.math.fast_dividef` only when accuracy loss is acceptable
+
+5. **Control Flow:**
+   - Replace `continue` with conditional masks
+   - Replace `break` with early termination flags and tl.where
+   - Avoid Python control flow depending on Triton runtime values
+
+6. **Hardware Constraints (AMD MI300x):**
+   - Shared memory per block: ≤ 65536 bytes
+   - Configure BLOCK_SIZE, num_stages, num_warps carefully
+   - Use `@triton.autotune` to find optimal configs
+
+7. **Weight Preprocessing:**
+   - In `__init__`: transpose, reshape, convert weights to optimal layout
+   - In `forward`: avoid dynamic transpose/reshape operations
+   - Store preprocessed weights as nn.Parameter or buffers
+
+### **Verification Checklist** ###
+Before submitting ModelNew, verify:
+- [ ] All Triton functions have `@triton.jit` decorator
+- [ ] No use of forbidden APIs (tl.math.tanh, tl.astype, etc.)
+- [ ] Floating-point ops use fp32 intermediate precision
+- [ ] Tensor indexing uses proper dimensions (no scalar index on 2D tensor)
+- [ ] No `break` or `continue` statements
+- [ ] Bounds checking with masks before load/store
+- [ ] Numerical computations match reference implementation exactly
+- [ ] Memory usage within hardware limits
+
+### **Priority: CORRECTNESS > PERFORMANCE** ###
+If unsure, choose the more numerically stable and correct approach over performance optimization.
+",2025-11-17T07:48:45.202923,4e9bfb94-7afb-474b-be89-03939e899845,completed,True,True,0.0422,0.0422,0.00293,0.0348,0.0534,0.236,0.236,0.0204,0.206,0.279,5.592417061611374,50,,,,40.00980615615845
+13_Matmul_for_symmetric_matrices,13_Matmul_for_symmetric_matrices.py,level1,triton,4090,claude-sonnet-4.5,anthropic,"
+### **CRITICAL: CORRECTNESS FIRST, PERFORMANCE SECOND** ###
+You MUST guarantee the correctness of ModelNew. Do NOT cheat by simplifying logic or skipping computations.
+
+### **Common Errors to AVOID** ###
+
+**ERROR 1: Numerical Accuracy Issues (GELU, Normalization, Softmax)**
+- ❌ WRONG: Using fp16 directly for `tl.exp()`, `tl.log()`, or complex math operations
+- ✅ CORRECT: Always cast to fp32 for intermediate calculations, then cast back:
+  ```python
+  # For GELU, Softmax, LayerNorm, RMSNorm, etc.
+  x_fp32 = x.to(tl.float32)
+  result = compute_with_exp_log(x_fp32)  # Do math in fp32
+  output = result.to(input_dtype)  # Cast back to original dtype
+  ```
+- For normalization operations (LayerNorm, RMSNorm, BatchNorm):
+  * Compute mean and variance in fp32
+  * Use numerically stable formulas: `variance = E[x²] - E[x]²`
+  * Add epsilon BEFORE sqrt: `rsqrt(variance + eps)`
+
+**ERROR 2: Missing @triton.jit Decorator**
+- ❌ WRONG: Helper functions without decorator that use Triton operations
+  ```python
+  def helper(x):  # Missing decorator!
+      return tl.exp(x)
+  ```
+- ✅ CORRECT: Add `@triton.jit` to ALL functions using Triton ops:
+  ```python
+  @triton.jit
+  def helper(x):
+      return tl.exp(x)
+  ```
+
+**ERROR 3: Invalid Triton APIs**
+- ❌ FORBIDDEN APIs (do NOT use):
+  * `tl.math.tanh` → Use: `(tl.exp(2*x) - 1) / (tl.exp(2*x) + 1)`
+  * `tl.tanh` → Same as above
+  * `tl.astype()` → Use: `.to(dtype)`
+  * `tl.floor_div`, `tl.floor_divide` → Use: `tl.math.floor(x / y)` or `x // y`
+  * `tl.full_like(x, v)` → Use: `tl.zeros_like(x) + v`
+  * `tl.sum(x, where=...)` → NOT supported, use masking: `tl.sum(tl.where(mask, x, 0))`
+  * `tl.program_id(axis=3)` → Only axes 0,1,2 supported (3D grid max)
+
+**ERROR 4: Tensor Indexing Issues**
+- ❌ WRONG: Using scalar indices on multi-dimensional tensors
+  ```python
+  qk += Q_block[:, k][:, None] * K_block[None, :, k]  # k is int32 scalar!
+  ```
+- ✅ CORRECT: Use proper slicing or tl.arange for indexing:
+  ```python
+  # Option 1: Expand dimensions properly
+  q_vec = tl.load(Q_ptr + row_idx * stride + k)  # Load as 1D
+  k_vec = tl.load(K_ptr + k * stride + col_idx)
+  qk += q_vec[:, None] * k_vec[None, :]
+  
+  # Option 2: Use range-based indexing
+  k_range = tl.arange(0, BLOCK_K) + k
+  Q_slice = tl.load(Q_ptr + row_idx[:, None] * stride + k_range[None, :])
+  ```
+
+**ERROR 5: Control Flow Restrictions**
+- ❌ FORBIDDEN: `continue` and `break` statements in Triton kernels
+  ```python
+  for i in range(N):
+      if condition:
+          continue  # NOT ALLOWED!
+  ```
+- ✅ CORRECT: Use conditional execution with tl.where or restructure logic:
+  ```python
+  for i in range(N):
+      mask = condition
+      result = tl.where(mask, compute_A(x), compute_B(x))
+  ```
+
+### **Mandatory Rules for Correctness** ###
+
+1. **Dtype Handling:**
+   - Cast to fp32 for: exp, log, sqrt, rsqrt, division, complex math
+   - Keep original dtype for: loads, stores, simple add/multiply
+   - Pattern: `input.to(tl.float32)` → compute → `.to(original_dtype)`
+
+2. **Triton Decorator Requirements:**
+   - ALWAYS add `@triton.jit` before any function using Triton language ops
+   - Include `@triton.autotune` for performance optimization (optional but recommended)
+   - All helper functions called from kernel need `@triton.jit`
+
+3. **Memory and Indexing:**
+   - `tl.arange()` arguments must be compile-time constants
+   - Use contiguous pointers for `tl.store`, not block tensors directly
+   - Apply bounds checking: `mask = (idx < N)` before load/store
+   - For multi-dimensional indexing, use explicit offset calculations
+
+4. **Numerical Stability:**
+   - GELU: Use `0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))` in fp32
+   - Softmax: Subtract max before exp: `exp(x - max(x))`
+   - LayerNorm/RMSNorm: Compute statistics in fp32, add epsilon before rsqrt
+   - Use `tl.math.fast_dividef` only when accuracy loss is acceptable
+
+5. **Control Flow:**
+   - Replace `continue` with conditional masks
+   - Replace `break` with early termination flags and tl.where
+   - Avoid Python control flow depending on Triton runtime values
+
+6. **Hardware Constraints (AMD MI300x):**
+   - Shared memory per block: ≤ 65536 bytes
+   - Configure BLOCK_SIZE, num_stages, num_warps carefully
+   - Use `@triton.autotune` to find optimal configs
+
+7. **Weight Preprocessing:**
+   - In `__init__`: transpose, reshape, convert weights to optimal layout
+   - In `forward`: avoid dynamic transpose/reshape operations
+   - Store preprocessed weights as nn.Parameter or buffers
+
+### **Verification Checklist** ###
+Before submitting ModelNew, verify:
+- [ ] All Triton functions have `@triton.jit` decorator
+- [ ] No use of forbidden APIs (tl.math.tanh, tl.astype, etc.)
+- [ ] Floating-point ops use fp32 intermediate precision
+- [ ] Tensor indexing uses proper dimensions (no scalar index on 2D tensor)
+- [ ] No `break` or `continue` statements
+- [ ] Bounds checking with masks before load/store
+- [ ] Numerical computations match reference implementation exactly
+- [ ] Memory usage within hardware limits
+
+### **Priority: CORRECTNESS > PERFORMANCE** ###
+If unsure, choose the more numerically stable and correct approach over performance optimization.
+",2025-11-17T07:49:30.213636,a4895916-af0b-4afe-983e-f424eb36a9f5,completed,True,True,0.794,0.794,0.0555,0.719,0.933,0.245,0.245,0.0156,0.225,0.288,0.30856423173803527,50,,,,40.010156869888306
+14_Matmul_for_upper_triangular_matrices,14_Matmul_for_upper_triangular_matrices.py,level1,triton,4090,claude-sonnet-4.5,anthropic,"
+### **CRITICAL: CORRECTNESS FIRST, PERFORMANCE SECOND** ###
+You MUST guarantee the correctness of ModelNew. Do NOT cheat by simplifying logic or skipping computations.
+
+### **Common Errors to AVOID** ###
+
+**ERROR 1: Numerical Accuracy Issues (GELU, Normalization, Softmax)**
+- ❌ WRONG: Using fp16 directly for `tl.exp()`, `tl.log()`, or complex math operations
+- ✅ CORRECT: Always cast to fp32 for intermediate calculations, then cast back:
+  ```python
+  # For GELU, Softmax, LayerNorm, RMSNorm, etc.
+  x_fp32 = x.to(tl.float32)
+  result = compute_with_exp_log(x_fp32)  # Do math in fp32
+  output = result.to(input_dtype)  # Cast back to original dtype
+  ```
+- For normalization operations (LayerNorm, RMSNorm, BatchNorm):
+  * Compute mean and variance in fp32
+  * Use numerically stable formulas: `variance = E[x²] - E[x]²`
+  * Add epsilon BEFORE sqrt: `rsqrt(variance + eps)`
+
+**ERROR 2: Missing @triton.jit Decorator**
+- ❌ WRONG: Helper functions without decorator that use Triton operations
+  ```python
+  def helper(x):  # Missing decorator!
+      return tl.exp(x)
+  ```
+- ✅ CORRECT: Add `@triton.jit` to ALL functions using Triton ops:
+  ```python
+  @triton.jit
+  def helper(x):
+      return tl.exp(x)
+  ```
+
+**ERROR 3: Invalid Triton APIs**
+- ❌ FORBIDDEN APIs (do NOT use):
+  * `tl.math.tanh` → Use: `(tl.exp(2*x) - 1) / (tl.exp(2*x) + 1)`
+  * `tl.tanh` → Same as above
+  * `tl.astype()` → Use: `.to(dtype)`
+  * `tl.floor_div`, `tl.floor_divide` → Use: `tl.math.floor(x / y)` or `x // y`
+  * `tl.full_like(x, v)` → Use: `tl.zeros_like(x) + v`
+  * `tl.sum(x, where=...)` → NOT supported, use masking: `tl.sum(tl.where(mask, x, 0))`
+  * `tl.program_id(axis=3)` → Only axes 0,1,2 supported (3D grid max)
+
+**ERROR 4: Tensor Indexing Issues**
+- ❌ WRONG: Using scalar indices on multi-dimensional tensors
+  ```python
+  qk += Q_block[:, k][:, None] * K_block[None, :, k]  # k is int32 scalar!
+  ```
+- ✅ CORRECT: Use proper slicing or tl.arange for indexing:
+  ```python
+  # Option 1: Expand dimensions properly
+  q_vec = tl.load(Q_ptr + row_idx * stride + k)  # Load as 1D
+  k_vec = tl.load(K_ptr + k * stride + col_idx)
+  qk += q_vec[:, None] * k_vec[None, :]
+  
+  # Option 2: Use range-based indexing
+  k_range = tl.arange(0, BLOCK_K) + k
+  Q_slice = tl.load(Q_ptr + row_idx[:, None] * stride + k_range[None, :])
+  ```
+
+**ERROR 5: Control Flow Restrictions**
+- ❌ FORBIDDEN: `continue` and `break` statements in Triton kernels
+  ```python
+  for i in range(N):
+      if condition:
+          continue  # NOT ALLOWED!
+  ```
+- ✅ CORRECT: Use conditional execution with tl.where or restructure logic:
+  ```python
+  for i in range(N):
+      mask = condition
+      result = tl.where(mask, compute_A(x), compute_B(x))
+  ```
+
+### **Mandatory Rules for Correctness** ###
+
+1. **Dtype Handling:**
+   - Cast to fp32 for: exp, log, sqrt, rsqrt, division, complex math
+   - Keep original dtype for: loads, stores, simple add/multiply
+   - Pattern: `input.to(tl.float32)` → compute → `.to(original_dtype)`
+
+2. **Triton Decorator Requirements:**
+   - ALWAYS add `@triton.jit` before any function using Triton language ops
+   - Include `@triton.autotune` for performance optimization (optional but recommended)
+   - All helper functions called from kernel need `@triton.jit`
+
+3. **Memory and Indexing:**
+   - `tl.arange()` arguments must be compile-time constants
+   - Use contiguous pointers for `tl.store`, not block tensors directly
+   - Apply bounds checking: `mask = (idx < N)` before load/store
+   - For multi-dimensional indexing, use explicit offset calculations
+
+4. **Numerical Stability:**
+   - GELU: Use `0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))` in fp32
+   - Softmax: Subtract max before exp: `exp(x - max(x))`
+   - LayerNorm/RMSNorm: Compute statistics in fp32, add epsilon before rsqrt
+   - Use `tl.math.fast_dividef` only when accuracy loss is acceptable
+
+5. **Control Flow:**
+   - Replace `continue` with conditional masks
+   - Replace `break` with early termination flags and tl.where
+   - Avoid Python control flow depending on Triton runtime values
+
+6. **Hardware Constraints (AMD MI300x):**
+   - Shared memory per block: ≤ 65536 bytes
+   - Configure BLOCK_SIZE, num_stages, num_warps carefully
+   - Use `@triton.autotune` to find optimal configs
+
+7. **Weight Preprocessing:**
+   - In `__init__`: transpose, reshape, convert weights to optimal layout
+   - In `forward`: avoid dynamic transpose/reshape operations
+   - Store preprocessed weights as nn.Parameter or buffers
+
+### **Verification Checklist** ###
+Before submitting ModelNew, verify:
+- [ ] All Triton functions have `@triton.jit` decorator
+- [ ] No use of forbidden APIs (tl.math.tanh, tl.astype, etc.)
+- [ ] Floating-point ops use fp32 intermediate precision
+- [ ] Tensor indexing uses proper dimensions (no scalar index on 2D tensor)
+- [ ] No `break` or `continue` statements
+- [ ] Bounds checking with masks before load/store
+- [ ] Numerical computations match reference implementation exactly
+- [ ] Memory usage within hardware limits
+
+### **Priority: CORRECTNESS > PERFORMANCE** ###
+If unsure, choose the more numerically stable and correct approach over performance optimization.
+",2025-11-17T07:50:15.224884,8484cdbe-fa95-4cf1-aa77-01da341e971a,completed,True,True,0.981,0.981,0.0158,0.961,1.05,0.242,0.242,0.0243,0.209,0.297,0.24668705402650357,50,,,,40.00969982147217
+15_Matmul_for_lower_triangular_matrices,15_Matmul_for_lower_triangular_matrices.py,level1,triton,4090,claude-sonnet-4.5,anthropic,"
+### **CRITICAL: CORRECTNESS FIRST, PERFORMANCE SECOND** ###
+You MUST guarantee the correctness of ModelNew. Do NOT cheat by simplifying logic or skipping computations.
+
+### **Common Errors to AVOID** ###
+
+**ERROR 1: Numerical Accuracy Issues (GELU, Normalization, Softmax)**
+- ❌ WRONG: Using fp16 directly for `tl.exp()`, `tl.log()`, or complex math operations
+- ✅ CORRECT: Always cast to fp32 for intermediate calculations, then cast back:
+  ```python
+  # For GELU, Softmax, LayerNorm, RMSNorm, etc.
+  x_fp32 = x.to(tl.float32)
+  result = compute_with_exp_log(x_fp32)  # Do math in fp32
+  output = result.to(input_dtype)  # Cast back to original dtype
+  ```
+- For normalization operations (LayerNorm, RMSNorm, BatchNorm):
+  * Compute mean and variance in fp32
+  * Use numerically stable formulas: `variance = E[x²] - E[x]²`
+  * Add epsilon BEFORE sqrt: `rsqrt(variance + eps)`
+
+**ERROR 2: Missing @triton.jit Decorator**
+- ❌ WRONG: Helper functions without decorator that use Triton operations
+  ```python
+  def helper(x):  # Missing decorator!
+      return tl.exp(x)
+  ```
+- ✅ CORRECT: Add `@triton.jit` to ALL functions using Triton ops:
+  ```python
+  @triton.jit
+  def helper(x):
+      return tl.exp(x)
+  ```
+
+**ERROR 3: Invalid Triton APIs**
+- ❌ FORBIDDEN APIs (do NOT use):
+  * `tl.math.tanh` → Use: `(tl.exp(2*x) - 1) / (tl.exp(2*x) + 1)`
+  * `tl.tanh` → Same as above
+  * `tl.astype()` → Use: `.to(dtype)`
+  * `tl.floor_div`, `tl.floor_divide` → Use: `tl.math.floor(x / y)` or `x // y`
+  * `tl.full_like(x, v)` → Use: `tl.zeros_like(x) + v`
+  * `tl.sum(x, where=...)` → NOT supported, use masking: `tl.sum(tl.where(mask, x, 0))`
+  * `tl.program_id(axis=3)` → Only axes 0,1,2 supported (3D grid max)
+
+**ERROR 4: Tensor Indexing Issues**
+- ❌ WRONG: Using scalar indices on multi-dimensional tensors
+  ```python
+  qk += Q_block[:, k][:, None] * K_block[None, :, k]  # k is int32 scalar!
+  ```
+- ✅ CORRECT: Use proper slicing or tl.arange for indexing:
+  ```python
+  # Option 1: Expand dimensions properly
+  q_vec = tl.load(Q_ptr + row_idx * stride + k)  # Load as 1D
+  k_vec = tl.load(K_ptr + k * stride + col_idx)
+  qk += q_vec[:, None] * k_vec[None, :]
+  
+  # Option 2: Use range-based indexing
+  k_range = tl.arange(0, BLOCK_K) + k
+  Q_slice = tl.load(Q_ptr + row_idx[:, None] * stride + k_range[None, :])
+  ```
+
+**ERROR 5: Control Flow Restrictions**
+- ❌ FORBIDDEN: `continue` and `break` statements in Triton kernels
+  ```python
+  for i in range(N):
+      if condition:
+          continue  # NOT ALLOWED!
+  ```
+- ✅ CORRECT: Use conditional execution with tl.where or restructure logic:
+  ```python
+  for i in range(N):
+      mask = condition
+      result = tl.where(mask, compute_A(x), compute_B(x))
+  ```
+
+### **Mandatory Rules for Correctness** ###
+
+1. **Dtype Handling:**
+   - Cast to fp32 for: exp, log, sqrt, rsqrt, division, complex math
+   - Keep original dtype for: loads, stores, simple add/multiply
+   - Pattern: `input.to(tl.float32)` → compute → `.to(original_dtype)`
+
+2. **Triton Decorator Requirements:**
+   - ALWAYS add `@triton.jit` before any function using Triton language ops
+   - Include `@triton.autotune` for performance optimization (optional but recommended)
+   - All helper functions called from kernel need `@triton.jit`
+
+3. **Memory and Indexing:**
+   - `tl.arange()` arguments must be compile-time constants
+   - Use contiguous pointers for `tl.store`, not block tensors directly
+   - Apply bounds checking: `mask = (idx < N)` before load/store
+   - For multi-dimensional indexing, use explicit offset calculations
+
+4. **Numerical Stability:**
+   - GELU: Use `0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))` in fp32
+   - Softmax: Subtract max before exp: `exp(x - max(x))`
+   - LayerNorm/RMSNorm: Compute statistics in fp32, add epsilon before rsqrt
+   - Use `tl.math.fast_dividef` only when accuracy loss is acceptable
+
+5. **Control Flow:**
+   - Replace `continue` with conditional masks
+   - Replace `break` with early termination flags and tl.where
+   - Avoid Python control flow depending on Triton runtime values
+
+6. **Hardware Constraints (AMD MI300x):**
+   - Shared memory per block: ≤ 65536 bytes
+   - Configure BLOCK_SIZE, num_stages, num_warps carefully
+   - Use `@triton.autotune` to find optimal configs
+
+7. **Weight Preprocessing:**
+   - In `__init__`: transpose, reshape, convert weights to optimal layout
+   - In `forward`: avoid dynamic transpose/reshape operations
+   - Store preprocessed weights as nn.Parameter or buffers
+
+### **Verification Checklist** ###
+Before submitting ModelNew, verify:
+- [ ] All Triton functions have `@triton.jit` decorator
+- [ ] No use of forbidden APIs (tl.math.tanh, tl.astype, etc.)
+- [ ] Floating-point ops use fp32 intermediate precision
+- [ ] Tensor indexing uses proper dimensions (no scalar index on 2D tensor)
+- [ ] No `break` or `continue` statements
+- [ ] Bounds checking with masks before load/store
+- [ ] Numerical computations match reference implementation exactly
+- [ ] Memory usage within hardware limits
+
+### **Priority: CORRECTNESS > PERFORMANCE** ###
+If unsure, choose the more numerically stable and correct approach over performance optimization.
+",2025-11-17T07:51:00.235738,12552f28-e3d9-43f9-9f84-1e28581c9feb,completed,True,True,1.07,1.07,0.104,1.0,1.28,0.242,0.242,0.0248,0.207,0.302,0.2261682242990654,50,,,,80.01484632492065
+16_Matmul_with_transposed_A,16_Matmul_with_transposed_A.py,level1,triton,4090,claude-sonnet-4.5,anthropic,"
+### **CRITICAL: CORRECTNESS FIRST, PERFORMANCE SECOND** ###
+You MUST guarantee the correctness of ModelNew. Do NOT cheat by simplifying logic or skipping computations.
+
+### **Common Errors to AVOID** ###
+
+**ERROR 1: Numerical Accuracy Issues (GELU, Normalization, Softmax)**
+- ❌ WRONG: Using fp16 directly for `tl.exp()`, `tl.log()`, or complex math operations
+- ✅ CORRECT: Always cast to fp32 for intermediate calculations, then cast back:
+  ```python
+  # For GELU, Softmax, LayerNorm, RMSNorm, etc.
+  x_fp32 = x.to(tl.float32)
+  result = compute_with_exp_log(x_fp32)  # Do math in fp32
+  output = result.to(input_dtype)  # Cast back to original dtype
+  ```
+- For normalization operations (LayerNorm, RMSNorm, BatchNorm):
+  * Compute mean and variance in fp32
+  * Use numerically stable formulas: `variance = E[x²] - E[x]²`
+  * Add epsilon BEFORE sqrt: `rsqrt(variance + eps)`
+
+**ERROR 2: Missing @triton.jit Decorator**
+- ❌ WRONG: Helper functions without decorator that use Triton operations
+  ```python
+  def helper(x):  # Missing decorator!
+      return tl.exp(x)
+  ```
+- ✅ CORRECT: Add `@triton.jit` to ALL functions using Triton ops:
+  ```python
+  @triton.jit
+  def helper(x):
+      return tl.exp(x)
+  ```
+
+**ERROR 3: Invalid Triton APIs**
+- ❌ FORBIDDEN APIs (do NOT use):
+  * `tl.math.tanh` → Use: `(tl.exp(2*x) - 1) / (tl.exp(2*x) + 1)`
+  * `tl.tanh` → Same as above
+  * `tl.astype()` → Use: `.to(dtype)`
+  * `tl.floor_div`, `tl.floor_divide` → Use: `tl.math.floor(x / y)` or `x // y`
+  * `tl.full_like(x, v)` → Use: `tl.zeros_like(x) + v`
+  * `tl.sum(x, where=...)` → NOT supported, use masking: `tl.sum(tl.where(mask, x, 0))`
+  * `tl.program_id(axis=3)` → Only axes 0,1,2 supported (3D grid max)
+
+**ERROR 4: Tensor Indexing Issues**
+- ❌ WRONG: Using scalar indices on multi-dimensional tensors
+  ```python
+  qk += Q_block[:, k][:, None] * K_block[None, :, k]  # k is int32 scalar!
+  ```
+- ✅ CORRECT: Use proper slicing or tl.arange for indexing:
+  ```python
+  # Option 1: Expand dimensions properly
+  q_vec = tl.load(Q_ptr + row_idx * stride + k)  # Load as 1D
+  k_vec = tl.load(K_ptr + k * stride + col_idx)
+  qk += q_vec[:, None] * k_vec[None, :]
+  
+  # Option 2: Use range-based indexing
+  k_range = tl.arange(0, BLOCK_K) + k
+  Q_slice = tl.load(Q_ptr + row_idx[:, None] * stride + k_range[None, :])
+  ```
+
+**ERROR 5: Control Flow Restrictions**
+- ❌ FORBIDDEN: `continue` and `break` statements in Triton kernels
+  ```python
+  for i in range(N):
+      if condition:
+          continue  # NOT ALLOWED!
+  ```
+- ✅ CORRECT: Use conditional execution with tl.where or restructure logic:
+  ```python
+  for i in range(N):
+      mask = condition
+      result = tl.where(mask, compute_A(x), compute_B(x))
+  ```
+
+### **Mandatory Rules for Correctness** ###
+
+1. **Dtype Handling:**
+   - Cast to fp32 for: exp, log, sqrt, rsqrt, division, complex math
+   - Keep original dtype for: loads, stores, simple add/multiply
+   - Pattern: `input.to(tl.float32)` → compute → `.to(original_dtype)`
+
+2. **Triton Decorator Requirements:**
+   - ALWAYS add `@triton.jit` before any function using Triton language ops
+   - Include `@triton.autotune` for performance optimization (optional but recommended)
+   - All helper functions called from kernel need `@triton.jit`
+
+3. **Memory and Indexing:**
+   - `tl.arange()` arguments must be compile-time constants
+   - Use contiguous pointers for `tl.store`, not block tensors directly
+   - Apply bounds checking: `mask = (idx < N)` before load/store
+   - For multi-dimensional indexing, use explicit offset calculations
+
+4. **Numerical Stability:**
+   - GELU: Use `0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))` in fp32
+   - Softmax: Subtract max before exp: `exp(x - max(x))`
+   - LayerNorm/RMSNorm: Compute statistics in fp32, add epsilon before rsqrt
+   - Use `tl.math.fast_dividef` only when accuracy loss is acceptable
+
+5. **Control Flow:**
+   - Replace `continue` with conditional masks
+   - Replace `break` with early termination flags and tl.where
+   - Avoid Python control flow depending on Triton runtime values
+
+6. **Hardware Constraints (AMD MI300x):**
+   - Shared memory per block: ≤ 65536 bytes
+   - Configure BLOCK_SIZE, num_stages, num_warps carefully
+   - Use `@triton.autotune` to find optimal configs
+
+7. **Weight Preprocessing:**
+   - In `__init__`: transpose, reshape, convert weights to optimal layout
+   - In `forward`: avoid dynamic transpose/reshape operations
+   - Store preprocessed weights as nn.Parameter or buffers
+
+### **Verification Checklist** ###
+Before submitting ModelNew, verify:
+- [ ] All Triton functions have `@triton.jit` decorator
+- [ ] No use of forbidden APIs (tl.math.tanh, tl.astype, etc.)
+- [ ] Floating-point ops use fp32 intermediate precision
+- [ ] Tensor indexing uses proper dimensions (no scalar index on 2D tensor)
+- [ ] No `break` or `continue` statements
+- [ ] Bounds checking with masks before load/store
+- [ ] Numerical computations match reference implementation exactly
+- [ ] Memory usage within hardware limits
+
+### **Priority: CORRECTNESS > PERFORMANCE** ###
+If unsure, choose the more numerically stable and correct approach over performance optimization.
+",2025-11-17T07:52:25.251810,27dc5750-5b0a-4fdf-bbab-a7556a7c0321,completed,True,True,0.821,0.821,0.0647,0.762,1.04,0.299,0.299,0.0293,0.26,0.357,0.364190012180268,50,,,,520.070657491684
+17_Matmul_with_transposed_B,17_Matmul_with_transposed_B.py,level1,triton,4090,claude-sonnet-4.5,anthropic,"
+### **CRITICAL: CORRECTNESS FIRST, PERFORMANCE SECOND** ###
+You MUST guarantee the correctness of ModelNew. Do NOT cheat by simplifying logic or skipping computations.
+
+### **Common Errors to AVOID** ###
+
+**ERROR 1: Numerical Accuracy Issues (GELU, Normalization, Softmax)**
+- ❌ WRONG: Using fp16 directly for `tl.exp()`, `tl.log()`, or complex math operations
+- ✅ CORRECT: Always cast to fp32 for intermediate calculations, then cast back:
+  ```python
+  # For GELU, Softmax, LayerNorm, RMSNorm, etc.
+  x_fp32 = x.to(tl.float32)
+  result = compute_with_exp_log(x_fp32)  # Do math in fp32
+  output = result.to(input_dtype)  # Cast back to original dtype
+  ```
+- For normalization operations (LayerNorm, RMSNorm, BatchNorm):
+  * Compute mean and variance in fp32
+  * Use numerically stable formulas: `variance = E[x²] - E[x]²`
+  * Add epsilon BEFORE sqrt: `rsqrt(variance + eps)`
+
+**ERROR 2: Missing @triton.jit Decorator**
+- ❌ WRONG: Helper functions without decorator that use Triton operations
+  ```python
+  def helper(x):  # Missing decorator!
+      return tl.exp(x)
+  ```
+- ✅ CORRECT: Add `@triton.jit` to ALL functions using Triton ops:
+  ```python
+  @triton.jit
+  def helper(x):
+      return tl.exp(x)
+  ```
+
+**ERROR 3: Invalid Triton APIs**
+- ❌ FORBIDDEN APIs (do NOT use):
+  * `tl.math.tanh` → Use: `(tl.exp(2*x) - 1) / (tl.exp(2*x) + 1)`
+  * `tl.tanh` → Same as above
+  * `tl.astype()` → Use: `.to(dtype)`
+  * `tl.floor_div`, `tl.floor_divide` → Use: `tl.math.floor(x / y)` or `x // y`
+  * `tl.full_like(x, v)` → Use: `tl.zeros_like(x) + v`
+  * `tl.sum(x, where=...)` → NOT supported, use masking: `tl.sum(tl.where(mask, x, 0))`
+  * `tl.program_id(axis=3)` → Only axes 0,1,2 supported (3D grid max)
+
+**ERROR 4: Tensor Indexing Issues**
+- ❌ WRONG: Using scalar indices on multi-dimensional tensors
+  ```python
+  qk += Q_block[:, k][:, None] * K_block[None, :, k]  # k is int32 scalar!
+  ```
+- ✅ CORRECT: Use proper slicing or tl.arange for indexing:
+  ```python
+  # Option 1: Expand dimensions properly
+  q_vec = tl.load(Q_ptr + row_idx * stride + k)  # Load as 1D
+  k_vec = tl.load(K_ptr + k * stride + col_idx)
+  qk += q_vec[:, None] * k_vec[None, :]
+  
+  # Option 2: Use range-based indexing
+  k_range = tl.arange(0, BLOCK_K) + k
+  Q_slice = tl.load(Q_ptr + row_idx[:, None] * stride + k_range[None, :])
+  ```
+
+**ERROR 5: Control Flow Restrictions**
+- ❌ FORBIDDEN: `continue` and `break` statements in Triton kernels
+  ```python
+  for i in range(N):
+      if condition:
+          continue  # NOT ALLOWED!
+  ```
+- ✅ CORRECT: Use conditional execution with tl.where or restructure logic:
+  ```python
+  for i in range(N):
+      mask = condition
+      result = tl.where(mask, compute_A(x), compute_B(x))
+  ```
+
+### **Mandatory Rules for Correctness** ###
+
+1. **Dtype Handling:**
+   - Cast to fp32 for: exp, log, sqrt, rsqrt, division, complex math
+   - Keep original dtype for: loads, stores, simple add/multiply
+   - Pattern: `input.to(tl.float32)` → compute → `.to(original_dtype)`
+
+2. **Triton Decorator Requirements:**
+   - ALWAYS add `@triton.jit` before any function using Triton language ops
+   - Include `@triton.autotune` for performance optimization (optional but recommended)
+   - All helper functions called from kernel need `@triton.jit`
+
+3. **Memory and Indexing:**
+   - `tl.arange()` arguments must be compile-time constants
+   - Use contiguous pointers for `tl.store`, not block tensors directly
+   - Apply bounds checking: `mask = (idx < N)` before load/store
+   - For multi-dimensional indexing, use explicit offset calculations
+
+4. **Numerical Stability:**
+   - GELU: Use `0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))` in fp32
+   - Softmax: Subtract max before exp: `exp(x - max(x))`
+   - LayerNorm/RMSNorm: Compute statistics in fp32, add epsilon before rsqrt
+   - Use `tl.math.fast_dividef` only when accuracy loss is acceptable
+
+5. **Control Flow:**
+   - Replace `continue` with conditional masks
+   - Replace `break` with early termination flags and tl.where
+   - Avoid Python control flow depending on Triton runtime values
+
+6. **Hardware Constraints (AMD MI300x):**
+   - Shared memory per block: ≤ 65536 bytes
+   - Configure BLOCK_SIZE, num_stages, num_warps carefully
+   - Use `@triton.autotune` to find optimal configs
+
+7. **Weight Preprocessing:**
+   - In `__init__`: transpose, reshape, convert weights to optimal layout
+   - In `forward`: avoid dynamic transpose/reshape operations
+   - Store preprocessed weights as nn.Parameter or buffers
+
+### **Verification Checklist** ###
+Before submitting ModelNew, verify:
+- [ ] All Triton functions have `@triton.jit` decorator
+- [ ] No use of forbidden APIs (tl.math.tanh, tl.astype, etc.)
+- [ ] Floating-point ops use fp32 intermediate precision
+- [ ] Tensor indexing uses proper dimensions (no scalar index on 2D tensor)
+- [ ] No `break` or `continue` statements
+- [ ] Bounds checking with masks before load/store
+- [ ] Numerical computations match reference implementation exactly
+- [ ] Memory usage within hardware limits
+
+### **Priority: CORRECTNESS > PERFORMANCE** ###
+If unsure, choose the more numerically stable and correct approach over performance optimization.
+",2025-11-17T08:01:10.323793,c30826f8-cfd2-45c1-a736-7059d3fa5989,completed,True,True,0.572,0.572,0.022,0.545,0.611,0.285,0.285,0.0241,0.242,0.339,0.4982517482517482,50,,,,60.0125515460968
+18_Matmul_with_transposed_both,18_Matmul_with_transposed_both.py,level1,triton,4090,claude-sonnet-4.5,anthropic,"
+### **CRITICAL: CORRECTNESS FIRST, PERFORMANCE SECOND** ###
+You MUST guarantee the correctness of ModelNew. Do NOT cheat by simplifying logic or skipping computations.
+
+### **Common Errors to AVOID** ###
+
+**ERROR 1: Numerical Accuracy Issues (GELU, Normalization, Softmax)**
+- ❌ WRONG: Using fp16 directly for `tl.exp()`, `tl.log()`, or complex math operations
+- ✅ CORRECT: Always cast to fp32 for intermediate calculations, then cast back:
+  ```python
+  # For GELU, Softmax, LayerNorm, RMSNorm, etc.
+  x_fp32 = x.to(tl.float32)
+  result = compute_with_exp_log(x_fp32)  # Do math in fp32
+  output = result.to(input_dtype)  # Cast back to original dtype
+  ```
+- For normalization operations (LayerNorm, RMSNorm, BatchNorm):
+  * Compute mean and variance in fp32
+  * Use numerically stable formulas: `variance = E[x²] - E[x]²`
+  * Add epsilon BEFORE sqrt: `rsqrt(variance + eps)`
+
+**ERROR 2: Missing @triton.jit Decorator**
+- ❌ WRONG: Helper functions without decorator that use Triton operations
+  ```python
+  def helper(x):  # Missing decorator!
+      return tl.exp(x)
+  ```
+- ✅ CORRECT: Add `@triton.jit` to ALL functions using Triton ops:
+  ```python
+  @triton.jit
+  def helper(x):
+      return tl.exp(x)
+  ```
+
+**ERROR 3: Invalid Triton APIs**
+- ❌ FORBIDDEN APIs (do NOT use):
+  * `tl.math.tanh` → Use: `(tl.exp(2*x) - 1) / (tl.exp(2*x) + 1)`
+  * `tl.tanh` → Same as above
+  * `tl.astype()` → Use: `.to(dtype)`
+  * `tl.floor_div`, `tl.floor_divide` → Use: `tl.math.floor(x / y)` or `x // y`
+  * `tl.full_like(x, v)` → Use: `tl.zeros_like(x) + v`
+  * `tl.sum(x, where=...)` → NOT supported, use masking: `tl.sum(tl.where(mask, x, 0))`
+  * `tl.program_id(axis=3)` → Only axes 0,1,2 supported (3D grid max)
+
+**ERROR 4: Tensor Indexing Issues**
+- ❌ WRONG: Using scalar indices on multi-dimensional tensors
+  ```python
+  qk += Q_block[:, k][:, None] * K_block[None, :, k]  # k is int32 scalar!
+  ```
+- ✅ CORRECT: Use proper slicing or tl.arange for indexing:
+  ```python
+  # Option 1: Expand dimensions properly
+  q_vec = tl.load(Q_ptr + row_idx * stride + k)  # Load as 1D
+  k_vec = tl.load(K_ptr + k * stride + col_idx)
+  qk += q_vec[:, None] * k_vec[None, :]
+  
+  # Option 2: Use range-based indexing
+  k_range = tl.arange(0, BLOCK_K) + k
+  Q_slice = tl.load(Q_ptr + row_idx[:, None] * stride + k_range[None, :])
+  ```
+
+**ERROR 5: Control Flow Restrictions**
+- ❌ FORBIDDEN: `continue` and `break` statements in Triton kernels
+  ```python
+  for i in range(N):
+      if condition:
+          continue  # NOT ALLOWED!
+  ```
+- ✅ CORRECT: Use conditional execution with tl.where or restructure logic:
+  ```python
+  for i in range(N):
+      mask = condition
+      result = tl.where(mask, compute_A(x), compute_B(x))
+  ```
+
+### **Mandatory Rules for Correctness** ###
+
+1. **Dtype Handling:**
+   - Cast to fp32 for: exp, log, sqrt, rsqrt, division, complex math
+   - Keep original dtype for: loads, stores, simple add/multiply
+   - Pattern: `input.to(tl.float32)` → compute → `.to(original_dtype)`
+
+2. **Triton Decorator Requirements:**
+   - ALWAYS add `@triton.jit` before any function using Triton language ops
+   - Include `@triton.autotune` for performance optimization (optional but recommended)
+   - All helper functions called from kernel need `@triton.jit`
+
+3. **Memory and Indexing:**
+   - `tl.arange()` arguments must be compile-time constants
+   - Use contiguous pointers for `tl.store`, not block tensors directly
+   - Apply bounds checking: `mask = (idx < N)` before load/store
+   - For multi-dimensional indexing, use explicit offset calculations
+
+4. **Numerical Stability:**
+   - GELU: Use `0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))` in fp32
+   - Softmax: Subtract max before exp: `exp(x - max(x))`
+   - LayerNorm/RMSNorm: Compute statistics in fp32, add epsilon before rsqrt
+   - Use `tl.math.fast_dividef` only when accuracy loss is acceptable
+
+5. **Control Flow:**
+   - Replace `continue` with conditional masks
+   - Replace `break` with early termination flags and tl.where
+   - Avoid Python control flow depending on Triton runtime values
+
+6. **Hardware Constraints (AMD MI300x):**
+   - Shared memory per block: ≤ 65536 bytes
+   - Configure BLOCK_SIZE, num_stages, num_warps carefully
+   - Use `@triton.autotune` to find optimal configs
+
+7. **Weight Preprocessing:**
+   - In `__init__`: transpose, reshape, convert weights to optimal layout
+   - In `forward`: avoid dynamic transpose/reshape operations
+   - Store preprocessed weights as nn.Parameter or buffers
+
+### **Verification Checklist** ###
+Before submitting ModelNew, verify:
+- [ ] All Triton functions have `@triton.jit` decorator
+- [ ] No use of forbidden APIs (tl.math.tanh, tl.astype, etc.)
+- [ ] Floating-point ops use fp32 intermediate precision
+- [ ] Tensor indexing uses proper dimensions (no scalar index on 2D tensor)
+- [ ] No `break` or `continue` statements
+- [ ] Bounds checking with masks before load/store
+- [ ] Numerical computations match reference implementation exactly
+- [ ] Memory usage within hardware limits
+
+### **Priority: CORRECTNESS > PERFORMANCE** ###
+If unsure, choose the more numerically stable and correct approach over performance optimization.
+",2025-11-17T08:02:15.337786,48d4fcfa-c191-4320-974c-5e5ed0bd8a36,completed,True,True,1.05,1.05,0.0204,1.03,1.14,1.31,1.31,0.0194,1.28,1.4,1.2476190476190476,50,,,,40.009636878967285
+19_ReLU,19_ReLU.py,level1,triton,4090,claude-sonnet-4.5,anthropic,"
+### **CRITICAL: CORRECTNESS FIRST, PERFORMANCE SECOND** ###
+You MUST guarantee the correctness of ModelNew. Do NOT cheat by simplifying logic or skipping computations.
+
+### **Common Errors to AVOID** ###
+
+**ERROR 1: Numerical Accuracy Issues (GELU, Normalization, Softmax)**
+- ❌ WRONG: Using fp16 directly for `tl.exp()`, `tl.log()`, or complex math operations
+- ✅ CORRECT: Always cast to fp32 for intermediate calculations, then cast back:
+  ```python
+  # For GELU, Softmax, LayerNorm, RMSNorm, etc.
+  x_fp32 = x.to(tl.float32)
+  result = compute_with_exp_log(x_fp32)  # Do math in fp32
+  output = result.to(input_dtype)  # Cast back to original dtype
+  ```
+- For normalization operations (LayerNorm, RMSNorm, BatchNorm):
+  * Compute mean and variance in fp32
+  * Use numerically stable formulas: `variance = E[x²] - E[x]²`
+  * Add epsilon BEFORE sqrt: `rsqrt(variance + eps)`
+
+**ERROR 2: Missing @triton.jit Decorator**
+- ❌ WRONG: Helper functions without decorator that use Triton operations
+  ```python
+  def helper(x):  # Missing decorator!
+      return tl.exp(x)
+  ```
+- ✅ CORRECT: Add `@triton.jit` to ALL functions using Triton ops:
+  ```python
+  @triton.jit
+  def helper(x):
+      return tl.exp(x)
+  ```
+
+**ERROR 3: Invalid Triton APIs**
+- ❌ FORBIDDEN APIs (do NOT use):
+  * `tl.math.tanh` → Use: `(tl.exp(2*x) - 1) / (tl.exp(2*x) + 1)`
+  * `tl.tanh` → Same as above
+  * `tl.astype()` → Use: `.to(dtype)`
+  * `tl.floor_div`, `tl.floor_divide` → Use: `tl.math.floor(x / y)` or `x // y`
+  * `tl.full_like(x, v)` → Use: `tl.zeros_like(x) + v`
+  * `tl.sum(x, where=...)` → NOT supported, use masking: `tl.sum(tl.where(mask, x, 0))`
+  * `tl.program_id(axis=3)` → Only axes 0,1,2 supported (3D grid max)
+
+**ERROR 4: Tensor Indexing Issues**
+- ❌ WRONG: Using scalar indices on multi-dimensional tensors
+  ```python
+  qk += Q_block[:, k][:, None] * K_block[None, :, k]  # k is int32 scalar!
+  ```
+- ✅ CORRECT: Use proper slicing or tl.arange for indexing:
+  ```python
+  # Option 1: Expand dimensions properly
+  q_vec = tl.load(Q_ptr + row_idx * stride + k)  # Load as 1D
+  k_vec = tl.load(K_ptr + k * stride + col_idx)
+  qk += q_vec[:, None] * k_vec[None, :]
+  
+  # Option 2: Use range-based indexing
+  k_range = tl.arange(0, BLOCK_K) + k
+  Q_slice = tl.load(Q_ptr + row_idx[:, None] * stride + k_range[None, :])
+  ```
+
+**ERROR 5: Control Flow Restrictions**
+- ❌ FORBIDDEN: `continue` and `break` statements in Triton kernels
+  ```python
+  for i in range(N):
+      if condition:
+          continue  # NOT ALLOWED!
+  ```
+- ✅ CORRECT: Use conditional execution with tl.where or restructure logic:
+  ```python
+  for i in range(N):
+      mask = condition
+      result = tl.where(mask, compute_A(x), compute_B(x))
+  ```
+
+### **Mandatory Rules for Correctness** ###
+
+1. **Dtype Handling:**
+   - Cast to fp32 for: exp, log, sqrt, rsqrt, division, complex math
+   - Keep original dtype for: loads, stores, simple add/multiply
+   - Pattern: `input.to(tl.float32)` → compute → `.to(original_dtype)`
+
+2. **Triton Decorator Requirements:**
+   - ALWAYS add `@triton.jit` before any function using Triton language ops
+   - Include `@triton.autotune` for performance optimization (optional but recommended)
+   - All helper functions called from kernel need `@triton.jit`
+
+3. **Memory and Indexing:**
+   - `tl.arange()` arguments must be compile-time constants
+   - Use contiguous pointers for `tl.store`, not block tensors directly
+   - Apply bounds checking: `mask = (idx < N)` before load/store
+   - For multi-dimensional indexing, use explicit offset calculations
+
+4. **Numerical Stability:**
+   - GELU: Use `0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))` in fp32
+   - Softmax: Subtract max before exp: `exp(x - max(x))`
+   - LayerNorm/RMSNorm: Compute statistics in fp32, add epsilon before rsqrt
+   - Use `tl.math.fast_dividef` only when accuracy loss is acceptable
+
+5. **Control Flow:**
+   - Replace `continue` with conditional masks
+   - Replace `break` with early termination flags and tl.where
+   - Avoid Python control flow depending on Triton runtime values
+
+6. **Hardware Constraints (AMD MI300x):**
+   - Shared memory per block: ≤ 65536 bytes
+   - Configure BLOCK_SIZE, num_stages, num_warps carefully
+   - Use `@triton.autotune` to find optimal configs
+
+7. **Weight Preprocessing:**
+   - In `__init__`: transpose, reshape, convert weights to optimal layout
+   - In `forward`: avoid dynamic transpose/reshape operations
+   - Store preprocessed weights as nn.Parameter or buffers
+
+### **Verification Checklist** ###
+Before submitting ModelNew, verify:
+- [ ] All Triton functions have `@triton.jit` decorator
+- [ ] No use of forbidden APIs (tl.math.tanh, tl.astype, etc.)
+- [ ] Floating-point ops use fp32 intermediate precision
+- [ ] Tensor indexing uses proper dimensions (no scalar index on 2D tensor)
+- [ ] No `break` or `continue` statements
+- [ ] Bounds checking with masks before load/store
+- [ ] Numerical computations match reference implementation exactly
+- [ ] Memory usage within hardware limits
+
+### **Priority: CORRECTNESS > PERFORMANCE** ###
+If unsure, choose the more numerically stable and correct approach over performance optimization.
+",2025-11-17T08:03:00.348953,ff85842c-4a8e-4998-9dd3-dd107b389232,completed,True,True,1.82,1.82,0.119,1.68,2.0,1.67,1.67,0.101,1.5,1.79,0.9175824175824175,50,,,,80.01438903808594
+1_Square_matrix_multiplication_,1_Square_matrix_multiplication_.py,level1,triton,4090,claude-sonnet-4.5,anthropic,"
+### **CRITICAL: CORRECTNESS FIRST, PERFORMANCE SECOND** ###
+You MUST guarantee the correctness of ModelNew. Do NOT cheat by simplifying logic or skipping computations.
+
+### **Common Errors to AVOID** ###
+
+**ERROR 1: Numerical Accuracy Issues (GELU, Normalization, Softmax)**
+- ❌ WRONG: Using fp16 directly for `tl.exp()`, `tl.log()`, or complex math operations
+- ✅ CORRECT: Always cast to fp32 for intermediate calculations, then cast back:
+  ```python
+  # For GELU, Softmax, LayerNorm, RMSNorm, etc.
+  x_fp32 = x.to(tl.float32)
+  result = compute_with_exp_log(x_fp32)  # Do math in fp32
+  output = result.to(input_dtype)  # Cast back to original dtype
+  ```
+- For normalization operations (LayerNorm, RMSNorm, BatchNorm):
+  * Compute mean and variance in fp32
+  * Use numerically stable formulas: `variance = E[x²] - E[x]²`
+  * Add epsilon BEFORE sqrt: `rsqrt(variance + eps)`
+
+**ERROR 2: Missing @triton.jit Decorator**
+- ❌ WRONG: Helper functions without decorator that use Triton operations
+  ```python
+  def helper(x):  # Missing decorator!
+      return tl.exp(x)
+  ```
+- ✅ CORRECT: Add `@triton.jit` to ALL functions using Triton ops:
+  ```python
+  @triton.jit
+  def helper(x):
+      return tl.exp(x)
+  ```
+
+**ERROR 3: Invalid Triton APIs**
+- ❌ FORBIDDEN APIs (do NOT use):
+  * `tl.math.tanh` → Use: `(tl.exp(2*x) - 1) / (tl.exp(2*x) + 1)`
+  * `tl.tanh` → Same as above
+  * `tl.astype()` → Use: `.to(dtype)`
+  * `tl.floor_div`, `tl.floor_divide` → Use: `tl.math.floor(x / y)` or `x // y`
+  * `tl.full_like(x, v)` → Use: `tl.zeros_like(x) + v`
+  * `tl.sum(x, where=...)` → NOT supported, use masking: `tl.sum(tl.where(mask, x, 0))`
+  * `tl.program_id(axis=3)` → Only axes 0,1,2 supported (3D grid max)
+
+**ERROR 4: Tensor Indexing Issues**
+- ❌ WRONG: Using scalar indices on multi-dimensional tensors
+  ```python
+  qk += Q_block[:, k][:, None] * K_block[None, :, k]  # k is int32 scalar!
+  ```
+- ✅ CORRECT: Use proper slicing or tl.arange for indexing:
+  ```python
+  # Option 1: Expand dimensions properly
+  q_vec = tl.load(Q_ptr + row_idx * stride + k)  # Load as 1D
+  k_vec = tl.load(K_ptr + k * stride + col_idx)
+  qk += q_vec[:, None] * k_vec[None, :]
+  
+  # Option 2: Use range-based indexing
+  k_range = tl.arange(0, BLOCK_K) + k
+  Q_slice = tl.load(Q_ptr + row_idx[:, None] * stride + k_range[None, :])
+  ```
+
+**ERROR 5: Control Flow Restrictions**
+- ❌ FORBIDDEN: `continue` and `break` statements in Triton kernels
+  ```python
+  for i in range(N):
+      if condition:
+          continue  # NOT ALLOWED!
+  ```
+- ✅ CORRECT: Use conditional execution with tl.where or restructure logic:
+  ```python
+  for i in range(N):
+      mask = condition
+      result = tl.where(mask, compute_A(x), compute_B(x))
+  ```
+
+### **Mandatory Rules for Correctness** ###
+
+1. **Dtype Handling:**
+   - Cast to fp32 for: exp, log, sqrt, rsqrt, division, complex math
+   - Keep original dtype for: loads, stores, simple add/multiply
+   - Pattern: `input.to(tl.float32)` → compute → `.to(original_dtype)`
+
+2. **Triton Decorator Requirements:**
+   - ALWAYS add `@triton.jit` before any function using Triton language ops
+   - Include `@triton.autotune` for performance optimization (optional but recommended)
+   - All helper functions called from kernel need `@triton.jit`
+
+3. **Memory and Indexing:**
+   - `tl.arange()` arguments must be compile-time constants
+   - Use contiguous pointers for `tl.store`, not block tensors directly
+   - Apply bounds checking: `mask = (idx < N)` before load/store
+   - For multi-dimensional indexing, use explicit offset calculations
+
+4. **Numerical Stability:**
+   - GELU: Use `0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))` in fp32
+   - Softmax: Subtract max before exp: `exp(x - max(x))`
+   - LayerNorm/RMSNorm: Compute statistics in fp32, add epsilon before rsqrt
+   - Use `tl.math.fast_dividef` only when accuracy loss is acceptable
+
+5. **Control Flow:**
+   - Replace `continue` with conditional masks
+   - Replace `break` with early termination flags and tl.where
+   - Avoid Python control flow depending on Triton runtime values
+
+6. **Hardware Constraints (AMD MI300x):**
+   - Shared memory per block: ≤ 65536 bytes
+   - Configure BLOCK_SIZE, num_stages, num_warps carefully
+   - Use `@triton.autotune` to find optimal configs
+
+7. **Weight Preprocessing:**
+   - In `__init__`: transpose, reshape, convert weights to optimal layout
+   - In `forward`: avoid dynamic transpose/reshape operations
+   - Store preprocessed weights as nn.Parameter or buffers
+
+### **Verification Checklist** ###
+Before submitting ModelNew, verify:
+- [ ] All Triton functions have `@triton.jit` decorator
+- [ ] No use of forbidden APIs (tl.math.tanh, tl.astype, etc.)
+- [ ] Floating-point ops use fp32 intermediate precision
+- [ ] Tensor indexing uses proper dimensions (no scalar index on 2D tensor)
+- [ ] No `break` or `continue` statements
+- [ ] Bounds checking with masks before load/store
+- [ ] Numerical computations match reference implementation exactly
+- [ ] Memory usage within hardware limits
+
+### **Priority: CORRECTNESS > PERFORMANCE** ###
+If unsure, choose the more numerically stable and correct approach over performance optimization.
+",2025-11-17T08:04:25.364976,90c62f32-1e6b-4fb1-88d8-0adea85eaec2,completed,True,True,0.599,0.599,0.0445,0.535,0.696,0.23,0.23,0.0133,0.217,0.296,0.38397328881469117,50,,,,40.00980043411255
+20_LeakyReLU,20_LeakyReLU.py,level1,triton,4090,claude-sonnet-4.5,anthropic,"
+### **CRITICAL: CORRECTNESS FIRST, PERFORMANCE SECOND** ###
+You MUST guarantee the correctness of ModelNew. Do NOT cheat by simplifying logic or skipping computations.
+
+### **Common Errors to AVOID** ###
+
+**ERROR 1: Numerical Accuracy Issues (GELU, Normalization, Softmax)**
+- ❌ WRONG: Using fp16 directly for `tl.exp()`, `tl.log()`, or complex math operations
+- ✅ CORRECT: Always cast to fp32 for intermediate calculations, then cast back:
+  ```python
+  # For GELU, Softmax, LayerNorm, RMSNorm, etc.
+  x_fp32 = x.to(tl.float32)
+  result = compute_with_exp_log(x_fp32)  # Do math in fp32
+  output = result.to(input_dtype)  # Cast back to original dtype
+  ```
+- For normalization operations (LayerNorm, RMSNorm, BatchNorm):
+  * Compute mean and variance in fp32
+  * Use numerically stable formulas: `variance = E[x²] - E[x]²`
+  * Add epsilon BEFORE sqrt: `rsqrt(variance + eps)`
+
+**ERROR 2: Missing @triton.jit Decorator**
+- ❌ WRONG: Helper functions without decorator that use Triton operations
+  ```python
+  def helper(x):  # Missing decorator!
+      return tl.exp(x)
+  ```
+- ✅ CORRECT: Add `@triton.jit` to ALL functions using Triton ops:
+  ```python
+  @triton.jit
+  def helper(x):
+      return tl.exp(x)
+  ```
+
+**ERROR 3: Invalid Triton APIs**
+- ❌ FORBIDDEN APIs (do NOT use):
+  * `tl.math.tanh` → Use: `(tl.exp(2*x) - 1) / (tl.exp(2*x) + 1)`
+  * `tl.tanh` → Same as above
+  * `tl.astype()` → Use: `.to(dtype)`
+  * `tl.floor_div`, `tl.floor_divide` → Use: `tl.math.floor(x / y)` or `x // y`
+  * `tl.full_like(x, v)` → Use: `tl.zeros_like(x) + v`
+  * `tl.sum(x, where=...)` → NOT supported, use masking: `tl.sum(tl.where(mask, x, 0))`
+  * `tl.program_id(axis=3)` → Only axes 0,1,2 supported (3D grid max)
+
+**ERROR 4: Tensor Indexing Issues**
+- ❌ WRONG: Using scalar indices on multi-dimensional tensors
+  ```python
+  qk += Q_block[:, k][:, None] * K_block[None, :, k]  # k is int32 scalar!
+  ```
+- ✅ CORRECT: Use proper slicing or tl.arange for indexing:
+  ```python
+  # Option 1: Expand dimensions properly
+  q_vec = tl.load(Q_ptr + row_idx * stride + k)  # Load as 1D
+  k_vec = tl.load(K_ptr + k * stride + col_idx)
+  qk += q_vec[:, None] * k_vec[None, :]
+  
+  # Option 2: Use range-based indexing
+  k_range = tl.arange(0, BLOCK_K) + k
+  Q_slice = tl.load(Q_ptr + row_idx[:, None] * stride + k_range[None, :])
+  ```
+
+**ERROR 5: Control Flow Restrictions**
+- ❌ FORBIDDEN: `continue` and `break` statements in Triton kernels
+  ```python
+  for i in range(N):
+      if condition:
+          continue  # NOT ALLOWED!
+  ```
+- ✅ CORRECT: Use conditional execution with tl.where or restructure logic:
+  ```python
+  for i in range(N):
+      mask = condition
+      result = tl.where(mask, compute_A(x), compute_B(x))
+  ```
+
+### **Mandatory Rules for Correctness** ###
+
+1. **Dtype Handling:**
+   - Cast to fp32 for: exp, log, sqrt, rsqrt, division, complex math
+   - Keep original dtype for: loads, stores, simple add/multiply
+   - Pattern: `input.to(tl.float32)` → compute → `.to(original_dtype)`
+
+2. **Triton Decorator Requirements:**
+   - ALWAYS add `@triton.jit` before any function using Triton language ops
+   - Include `@triton.autotune` for performance optimization (optional but recommended)
+   - All helper functions called from kernel need `@triton.jit`
+
+3. **Memory and Indexing:**
+   - `tl.arange()` arguments must be compile-time constants
+   - Use contiguous pointers for `tl.store`, not block tensors directly
+   - Apply bounds checking: `mask = (idx < N)` before load/store
+   - For multi-dimensional indexing, use explicit offset calculations
+
+4. **Numerical Stability:**
+   - GELU: Use `0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))` in fp32
+   - Softmax: Subtract max before exp: `exp(x - max(x))`
+   - LayerNorm/RMSNorm: Compute statistics in fp32, add epsilon before rsqrt
+   - Use `tl.math.fast_dividef` only when accuracy loss is acceptable
+
+5. **Control Flow:**
+   - Replace `continue` with conditional masks
+   - Replace `break` with early termination flags and tl.where
+   - Avoid Python control flow depending on Triton runtime values
+
+6. **Hardware Constraints (AMD MI300x):**
+   - Shared memory per block: ≤ 65536 bytes
+   - Configure BLOCK_SIZE, num_stages, num_warps carefully
+   - Use `@triton.autotune` to find optimal configs
+
+7. **Weight Preprocessing:**
+   - In `__init__`: transpose, reshape, convert weights to optimal layout
+   - In `forward`: avoid dynamic transpose/reshape operations
+   - Store preprocessed weights as nn.Parameter or buffers
+
+### **Verification Checklist** ###
+Before submitting ModelNew, verify:
+- [ ] All Triton functions have `@triton.jit` decorator
+- [ ] No use of forbidden APIs (tl.math.tanh, tl.astype, etc.)
+- [ ] Floating-point ops use fp32 intermediate precision
+- [ ] Tensor indexing uses proper dimensions (no scalar index on 2D tensor)
+- [ ] No `break` or `continue` statements
+- [ ] Bounds checking with masks before load/store
+- [ ] Numerical computations match reference implementation exactly
+- [ ] Memory usage within hardware limits
+
+### **Priority: CORRECTNESS > PERFORMANCE** ###
+If unsure, choose the more numerically stable and correct approach over performance optimization.
+",2025-11-17T08:05:10.376593,69ff0b48-1d24-4821-aa7c-1988753cbadb,completed,True,True,1.81,1.81,0.11,1.68,2.01,1.62,1.62,0.102,1.51,1.77,0.8950276243093923,50,,,,60.01218032836914
+21_Sigmoid,21_Sigmoid.py,level1,triton,4090,claude-sonnet-4.5,anthropic,"
+### **CRITICAL: CORRECTNESS FIRST, PERFORMANCE SECOND** ###
+You MUST guarantee the correctness of ModelNew. Do NOT cheat by simplifying logic or skipping computations.
+
+### **Common Errors to AVOID** ###
+
+**ERROR 1: Numerical Accuracy Issues (GELU, Normalization, Softmax)**
+- ❌ WRONG: Using fp16 directly for `tl.exp()`, `tl.log()`, or complex math operations
+- ✅ CORRECT: Always cast to fp32 for intermediate calculations, then cast back:
+  ```python
+  # For GELU, Softmax, LayerNorm, RMSNorm, etc.
+  x_fp32 = x.to(tl.float32)
+  result = compute_with_exp_log(x_fp32)  # Do math in fp32
+  output = result.to(input_dtype)  # Cast back to original dtype
+  ```
+- For normalization operations (LayerNorm, RMSNorm, BatchNorm):
+  * Compute mean and variance in fp32
+  * Use numerically stable formulas: `variance = E[x²] - E[x]²`
+  * Add epsilon BEFORE sqrt: `rsqrt(variance + eps)`
+
+**ERROR 2: Missing @triton.jit Decorator**
+- ❌ WRONG: Helper functions without decorator that use Triton operations
+  ```python
+  def helper(x):  # Missing decorator!
+      return tl.exp(x)
+  ```
+- ✅ CORRECT: Add `@triton.jit` to ALL functions using Triton ops:
+  ```python
+  @triton.jit
+  def helper(x):
+      return tl.exp(x)
+  ```
+
+**ERROR 3: Invalid Triton APIs**
+- ❌ FORBIDDEN APIs (do NOT use):
+  * `tl.math.tanh` → Use: `(tl.exp(2*x) - 1) / (tl.exp(2*x) + 1)`
+  * `tl.tanh` → Same as above
+  * `tl.astype()` → Use: `.to(dtype)`
+  * `tl.floor_div`, `tl.floor_divide` → Use: `tl.math.floor(x / y)` or `x // y`
+  * `tl.full_like(x, v)` → Use: `tl.zeros_like(x) + v`
+  * `tl.sum(x, where=...)` → NOT supported, use masking: `tl.sum(tl.where(mask, x, 0))`
+  * `tl.program_id(axis=3)` → Only axes 0,1,2 supported (3D grid max)
+
+**ERROR 4: Tensor Indexing Issues**
+- ❌ WRONG: Using scalar indices on multi-dimensional tensors
+  ```python
+  qk += Q_block[:, k][:, None] * K_block[None, :, k]  # k is int32 scalar!
+  ```
+- ✅ CORRECT: Use proper slicing or tl.arange for indexing:
+  ```python
+  # Option 1: Expand dimensions properly
+  q_vec = tl.load(Q_ptr + row_idx * stride + k)  # Load as 1D
+  k_vec = tl.load(K_ptr + k * stride + col_idx)
+  qk += q_vec[:, None] * k_vec[None, :]
+  
+  # Option 2: Use range-based indexing
+  k_range = tl.arange(0, BLOCK_K) + k
+  Q_slice = tl.load(Q_ptr + row_idx[:, None] * stride + k_range[None, :])
+  ```
+
+**ERROR 5: Control Flow Restrictions**
+- ❌ FORBIDDEN: `continue` and `break` statements in Triton kernels
+  ```python
+  for i in range(N):
+      if condition:
+          continue  # NOT ALLOWED!
+  ```
+- ✅ CORRECT: Use conditional execution with tl.where or restructure logic:
+  ```python
+  for i in range(N):
+      mask = condition
+      result = tl.where(mask, compute_A(x), compute_B(x))
+  ```
+
+### **Mandatory Rules for Correctness** ###
+
+1. **Dtype Handling:**
+   - Cast to fp32 for: exp, log, sqrt, rsqrt, division, complex math
+   - Keep original dtype for: loads, stores, simple add/multiply
+   - Pattern: `input.to(tl.float32)` → compute → `.to(original_dtype)`
+
+2. **Triton Decorator Requirements:**
+   - ALWAYS add `@triton.jit` before any function using Triton language ops
+   - Include `@triton.autotune` for performance optimization (optional but recommended)
+   - All helper functions called from kernel need `@triton.jit`
+
+3. **Memory and Indexing:**
+   - `tl.arange()` arguments must be compile-time constants
+   - Use contiguous pointers for `tl.store`, not block tensors directly
+   - Apply bounds checking: `mask = (idx < N)` before load/store
+   - For multi-dimensional indexing, use explicit offset calculations
+
+4. **Numerical Stability:**
+   - GELU: Use `0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))` in fp32
+   - Softmax: Subtract max before exp: `exp(x - max(x))`
+   - LayerNorm/RMSNorm: Compute statistics in fp32, add epsilon before rsqrt
+   - Use `tl.math.fast_dividef` only when accuracy loss is acceptable
+
+5. **Control Flow:**
+   - Replace `continue` with conditional masks
+   - Replace `break` with early termination flags and tl.where
+   - Avoid Python control flow depending on Triton runtime values
+
+6. **Hardware Constraints (AMD MI300x):**
+   - Shared memory per block: ≤ 65536 bytes
+   - Configure BLOCK_SIZE, num_stages, num_warps carefully
+   - Use `@triton.autotune` to find optimal configs
+
+7. **Weight Preprocessing:**
+   - In `__init__`: transpose, reshape, convert weights to optimal layout
+   - In `forward`: avoid dynamic transpose/reshape operations
+   - Store preprocessed weights as nn.Parameter or buffers
+
+### **Verification Checklist** ###
+Before submitting ModelNew, verify:
+- [ ] All Triton functions have `@triton.jit` decorator
+- [ ] No use of forbidden APIs (tl.math.tanh, tl.astype, etc.)
+- [ ] Floating-point ops use fp32 intermediate precision
+- [ ] Tensor indexing uses proper dimensions (no scalar index on 2D tensor)
+- [ ] No `break` or `continue` statements
+- [ ] Bounds checking with masks before load/store
+- [ ] Numerical computations match reference implementation exactly
+- [ ] Memory usage within hardware limits
+
+### **Priority: CORRECTNESS > PERFORMANCE** ###
+If unsure, choose the more numerically stable and correct approach over performance optimization.
+",2025-11-17T08:06:15.390734,265508ce-8962-43df-97a7-3fe894953f92,completed,True,True,1.97,1.97,0.0465,1.82,2.13,2.27,2.27,0.0852,2.11,2.46,1.1522842639593909,50,,,,80.01484537124634

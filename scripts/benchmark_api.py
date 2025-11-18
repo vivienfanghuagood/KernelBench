@@ -650,7 +650,7 @@ def main():
     parser.add_argument("--model-name", type=str, default="gpt-5",
                         help="Model name (default: gpt-5)")
     parser.add_argument("--server-type", type=str, default="openai",
-                        choices=["openai", "anthropic", "google", "deepseek"],
+                        choices=["openai", "anthropic", "nim"],
                         help="Server type (default: openai)")
     parser.add_argument("--max-tokens", type=int, default=4096,
                         help="Max tokens (default: 4096)")
@@ -694,8 +694,8 @@ def main():
             output_path = Path(args.output_dir)
             output_path.mkdir(parents=True, exist_ok=True)
             
-            results_file = output_path / f"benchmark_{args.backend}_{args.model_name}_{timestamp}_partial.json"
-            csv_file = output_path / f"benchmark_{args.backend}_{args.model_name}_{timestamp}_partial.csv"
+            results_file = output_path / f"benchmark_{args.backend}_{timestamp}_partial.json"
+            csv_file = output_path / f"benchmark_{args.backend}_{timestamp}_partial.csv"
             
             runner.save_results(results_file, csv_file)
             runner.print_summary()

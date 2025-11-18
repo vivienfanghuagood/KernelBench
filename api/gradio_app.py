@@ -499,7 +499,7 @@ class KernelBenchGradioApp:
                                 )
                                 
                                 server_type = gr.Dropdown(
-                                    choices=["deepseek", "openai", "anthropic", "google"],
+                                    choices=["deepseek", "openai", "anthropic", "google", "nim"],
                                     value="anthropic",
                                     label="Model Provider"
                                 )

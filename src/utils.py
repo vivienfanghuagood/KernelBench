@@ -173,6 +173,12 @@ def query_server(
                 }
             )
             model = model_name
+        case "nim":
+            client = OpenAI(
+                base_url="https://integrate.api.nvidia.com/v1",
+                api_key=OPENAI_KEY
+            )
+            model = model_name
         case _:
             raise NotImplementedError
 
@@ -339,6 +345,18 @@ def query_server(
             top_p=top_p,
         )
         outputs = [choice.message.content for choice in response.choices]
+    elif server_type == "nim":
+        response = client.chat.completions.create(
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ],
+            top_p=top_p,
+        )
+        outputs = [choice.message.content for choice in response.choices]
     # for all other kinds of servers, use standard API
     else:
         if type(prompt) == str:
@@ -408,6 +426,11 @@ SERVER_PRESETS = {
         "model_name": "Meta-Llama-3.1-405B-Instruct",
         "temperature": 0.1,
         "max_tokens": 8192,
+    },
+    "nim": {
+        "model_name": "qwen/qwen3-coder-480b-a35b-instruct",
+        "temperature": 0.7,
+        "max_tokens": 4096,
     },
 }
 

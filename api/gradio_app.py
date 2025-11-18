@@ -57,7 +57,8 @@ class KernelBenchGradioApp:
             "deepseek": "deepseek-coder",
             "openai": "gpt-5",
             "anthropic": "claude-sonnet-4.5",
-            "google": "gemini-1.5-flash-002"
+            "google": "gemini-1.5-flash-002",
+            "nim": "qwen/qwen3-coder-480b-a35b-instruct"
         }
         return model_map.get(server_type, "gpt-5")
     

@@ -15,7 +15,7 @@ from pathlib import Path
 import csv
 import argparse
 
-CUSTOM_PROMPT = """
+HIGH_CORRECT_PROMPT = """
 ### **CRITICAL: CORRECTNESS FIRST, PERFORMANCE SECOND** ###
 You MUST guarantee the correctness of ModelNew. Do NOT cheat by simplifying logic or skipping computations.
 
@@ -141,6 +141,253 @@ Before submitting ModelNew, verify:
 
 ### **Priority: CORRECTNESS > PERFORMANCE** ###
 If unsure, choose the more numerically stable and correct approach over performance optimization.
+"""
+
+HIGH_PERF_PROMPT = """
+### **CRITICAL: EXTREME PERFORMANCE OPTIMIZATION** ###
+You MUST achieve >2x speedup over PyTorch baseline while maintaining correctness. Use aggressive optimizations and fast approximations.
+
+### **PERFORMANCE FIRST: Key Optimization Strategies** ###
+
+**STRATEGY 1: Maximize Memory Bandwidth**
+- ✅ ALWAYS use contiguous memory access patterns (coalesced loads/stores)
+- ✅ Use vectorized loads: `tl.load()` with large BLOCK_SIZE (512, 1024, 2048)
+- ✅ Minimize pointer arithmetic overhead
+- ✅ For split operations (e.g., x[:, :d] and x[:, d:]), consider processing full rows at once
+- ❌ AVOID strided access patterns like `x[::2]` or non-contiguous slicing
+
+**STRATEGY 2: Kernel Fusion**
+- ✅ Fuse ALL elementwise operations into a single kernel (e.g., GELU + multiply + add)
+- ✅ Avoid intermediate memory allocations
+- ✅ Perform all computations in-register when possible
+- Example: `gelu(x) * y` should be ONE kernel, not two separate operations
+
+**STRATEGY 3: Fast Math Approximations**
+- ✅ GELU: Use `x * 0.5 * (1.0 + tl.math.tanh(0.797885 * (x + 0.044715 * x * x * x)))` OR faster sigmoid version
+- ✅ For GELU, the FASTEST approximation: `x * tl.sigmoid(1.702 * x)` (3-5x faster)
+- ✅ Tanh: Use `x * (27 + x²) / (27 + 9x²)` Padé approximation (no exp!)
+- ✅ Sigmoid: Clamp input then use `1.0 / (1.0 + tl.exp(-x))`
+- ✅ Use `tl.libdevice.fast_*` functions when available
+
+**STRATEGY 4: Aggressive Block Configurations**
+- ✅ Test BLOCK_SIZE from 256 to 4096
+- ✅ Use num_warps=8 or 16 for large blocks
+- ✅ Use num_stages=3 or 4 for memory-bound kernels (enables software pipelining)
+- ✅ Always use `@triton.autotune` with at least 8-12 configurations
+
+### **Common Errors to AVOID** ###
+
+**ERROR 1: Numerical Accuracy Issues (GELU, Normalization, Softmax)**
+- ❌ WRONG: Using fp16 directly for `tl.exp()`, `tl.log()`, or complex math operations
+- ✅ CORRECT: Always cast to fp32 for intermediate calculations, then cast back:
+  ```python
+  # For GELU, Softmax, LayerNorm, RMSNorm, etc.
+  x_fp32 = x.to(tl.float32)
+  result = compute_with_exp_log(x_fp32)  # Do math in fp32
+  output = result.to(input_dtype)  # Cast back to original dtype
+  ```
+- For normalization operations (LayerNorm, RMSNorm, BatchNorm):
+  * Compute mean and variance in fp32
+  * Use numerically stable formulas: `variance = E[x²] - E[x]²`
+  * Add epsilon BEFORE sqrt: `rsqrt(variance + eps)`
+
+**ERROR 2: Missing @triton.jit Decorator**
+- ❌ WRONG: Helper functions without decorator that use Triton operations
+  ```python
+  def helper(x):  # Missing decorator!
+      return tl.exp(x)
+  ```
+- ✅ CORRECT: Add `@triton.jit` to ALL functions using Triton ops:
+  ```python
+  @triton.jit
+  def helper(x):
+      return tl.exp(x)
+  ```
+
+**ERROR 3: Invalid Triton APIs**
+- ❌ FORBIDDEN APIs (do NOT use):
+  * `tl.math.tanh` → Use fast approximations (see below)
+  * `tl.tanh` → Use fast approximations (see below)
+  * `tl.astype()` → Use: `.to(dtype)`
+  * `tl.floor_div`, `tl.floor_divide` → Use: `x // y`
+  * `tl.full_like(x, v)` → Use: `tl.zeros_like(x) + v`
+  * `tl.sum(x, where=...)` → NOT supported, use masking: `tl.sum(tl.where(mask, x, 0))`
+  * `tl.program_id(axis=3)` → Only axes 0,1,2 supported (3D grid max)
+
+**ERROR 4: Inefficient Memory Access Patterns**
+- ❌ WRONG: Non-coalesced loads (strided, scattered)
+  ```python
+  # BAD: Each thread loads from non-contiguous locations
+  offsets = row_idx * stride + col_idx  # If threads have different row_idx
+  data = tl.load(ptr + offsets)
+  ```
+- ✅ CORRECT: Coalesced loads (contiguous blocks)
+  ```python
+  # GOOD: All threads in a warp load contiguous memory
+  block_start = tl.program_id(0) * BLOCK_SIZE
+  offsets = block_start + tl.arange(0, BLOCK_SIZE)  # Contiguous!
+  data = tl.load(ptr + offsets, mask=offsets < N)
+  ```
+
+**ERROR 5: Tensor Indexing Issues**
+- ❌ WRONG: Using scalar indices on multi-dimensional tensors
+  ```python
+  qk += Q_block[:, k][:, None] * K_block[None, :, k]  # k is int32 scalar!
+  ```
+- ✅ CORRECT: Use proper slicing or tl.arange for indexing:
+  ```python
+  # Option 1: Expand dimensions properly
+  q_vec = tl.load(Q_ptr + row_idx * stride + k)  # Load as 1D
+  k_vec = tl.load(K_ptr + k * stride + col_idx)
+  qk += q_vec[:, None] * k_vec[None, :]
+  
+  # Option 2: Use range-based indexing
+  k_range = tl.arange(0, BLOCK_K) + k
+  Q_slice = tl.load(Q_ptr + row_idx[:, None] * stride + k_range[None, :])
+  ```
+
+**ERROR 6: Control Flow Restrictions**
+- ❌ FORBIDDEN: `continue` and `break` statements in Triton kernels
+  ```python
+  for i in range(N):
+      if condition:
+          continue  # NOT ALLOWED!
+  ```
+- ✅ CORRECT: Use conditional execution with tl.where or restructure logic:
+  ```python
+  for i in range(N):
+      mask = condition
+      result = tl.where(mask, compute_A(x), compute_B(x))
+  ```
+
+### **ULTRA-FAST Activation Functions** ###
+
+**1. GELU - Multiple Speed Tiers (CRITICAL for >2x speedup):**
+```python
+# FASTEST: Sigmoid approximation - ALWAYS use this by default!
+@triton.jit
+def ultra_fast_gelu(x):
+    # gelu(x) ≈ x * σ(1.702 * x)
+    # Only ONE exp operation, 3-5x faster than tanh version
+    return x * tl.sigmoid(1.702 * x)
+
+# ALTERNATIVE: Tanh with Padé approximation (NO exp!)
+@triton.jit  
+def fast_gelu_no_exp(x):
+    # gelu(x) ≈ 0.5 * x * (1 + tanh(0.7978845608 * (x + 0.044715 * x³)))
+    x3 = x * x * x
+    inner = 0.7978845608 * (x + 0.044715 * x3)
+    # Padé: tanh(x) ≈ x(27 + x²) / (27 + 9x²)
+    x2 = inner * inner
+    tanh_val = inner * (27.0 + x2) / (27.0 + 9.0 * x2)
+    return 0.5 * x * (1.0 + tanh_val)
+```
+
+**2. Tanh - Ultra Fast (NO exp needed):**
+```python
+@triton.jit
+def ultra_fast_tanh(x):
+    # Padé [3/3] approximation - NO exp operations!
+    # tanh(x) ≈ x(27 + x²) / (27 + 9x²)
+    x_clamped = tl.where(x > 5.0, 5.0, tl.where(x < -5.0, -5.0, x))
+    x2 = x_clamped * x_clamped
+    return x_clamped * (27.0 + x2) / (27.0 + 9.0 * x2)
+```
+
+### **CRITICAL Performance Rules for >2x Speedup** ###
+
+1. **Memory Access Optimization (HIGHEST PRIORITY):**
+   - ✅ ALWAYS process contiguous blocks: `offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)`
+   - ✅ For split tensors like `x[:, :d]` and `x[:, d:]`, flatten to 1D:
+     ```python
+     # BEST PRACTICE for gelu(x[:, :d]) * x[:, d:]:
+     N = batch_size * out_features
+     flat_idx = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+     row = flat_idx // out_features
+     col = flat_idx % out_features
+     gate_idx = row * (2 * out_features) + col  # Fully coalesced!
+     up_idx = row * (2 * out_features) + out_features + col
+     gate = tl.load(x_ptr + gate_idx, mask=flat_idx < N)
+     up = tl.load(x_ptr + up_idx, mask=flat_idx < N)
+     ```
+   - ✅ Use LARGE BLOCK_SIZE: 1024, 2048, 4096 (test aggressively!)
+   - ❌ AVOID strided or scattered access patterns
+
+2. **Aggressive Autotuning (MANDATORY):**
+   ```python
+   @triton.autotune(
+       configs=[
+           triton.Config({'BLOCK_SIZE': 512}, num_warps=4, num_stages=3),
+           triton.Config({'BLOCK_SIZE': 1024}, num_warps=4, num_stages=3),
+           triton.Config({'BLOCK_SIZE': 1024}, num_warps=8, num_stages=3),
+           triton.Config({'BLOCK_SIZE': 2048}, num_warps=8, num_stages=4),
+           triton.Config({'BLOCK_SIZE': 2048}, num_warps=16, num_stages=4),
+           triton.Config({'BLOCK_SIZE': 4096}, num_warps=16, num_stages=4),
+           # Try different combinations
+           triton.Config({'BLOCK_SIZE': 1024}, num_warps=8, num_stages=2),
+           triton.Config({'BLOCK_SIZE': 2048}, num_warps=8, num_stages=2),
+       ],
+       key=['N'],
+   )
+   ```
+
+3. **Kernel Fusion (ESSENTIAL):**
+   - Fuse ALL elementwise ops into ONE kernel
+   - Example: `gelu(x) * y` should load both, compute, store once
+   - Avoid intermediate memory writes
+
+4. **Fast Math:**
+   - GELU: ALWAYS use `x * tl.sigmoid(1.702 * x)` by default
+   - Tanh: Use Padé approximation (no exp)
+   - Use fp32 for math, but minimize conversions
+
+5. **Triton Decorator Requirements:**
+   - ALWAYS add `@triton.jit` before any function using Triton language ops
+   - ALWAYS use `@triton.autotune` for performance-critical kernels
+   - All helper functions called from kernel need `@triton.jit`
+
+6. **Memory and Indexing Optimization:**
+   - `tl.arange()` arguments must be compile-time constants
+   - Use contiguous pointers for `tl.store`, not block tensors directly
+   - Apply bounds checking: `mask = (idx < N)` before load/store
+   - For multi-dimensional indexing, use explicit offset calculations
+   - Maximize memory coalescing: load contiguous blocks when possible
+   - Use larger BLOCK_SIZE for better occupancy (e.g., 1024, 2048, 4096)
+
+7. **Control Flow:**
+   - Replace `continue` with conditional masks
+   - Replace `break` with early termination flags and tl.where
+   - Avoid Python control flow depending on Triton runtime values
+
+8. **Hardware Optimization:**
+   - Shared memory per block: ≤ 65536 bytes
+   - Configure BLOCK_SIZE, num_stages, num_warps for maximum throughput
+   - num_warps: 4-16 (higher for larger BLOCK_SIZE)
+   - num_stages: 2-4 for software pipelining (more overlap = better performance)
+   - Test configurations aggressively with `@triton.autotune`
+
+9. **Weight Preprocessing:**
+   - In `__init__`: transpose, reshape, convert weights to optimal layout
+   - In `forward`: avoid dynamic transpose/reshape operations
+   - Store preprocessed weights as nn.Parameter or buffers
+
+### **Performance Checklist for >2x Speedup** ###
+Before submitting ModelNew, verify:
+- [ ] All Triton functions have `@triton.jit` decorator
+- [ ] No use of forbidden APIs (tl.math.tanh, tl.astype, etc.)
+- [ ] Using ultra_fast_gelu (sigmoid version) by default
+- [ ] Memory access is FULLY COALESCED (contiguous blocks)
+- [ ] BLOCK_SIZE includes 1024, 2048, 4096 in autotune
+- [ ] At least 6-8 autotune configurations tested
+- [ ] num_stages >= 3 for memory-bound kernels
+- [ ] Tensor indexing uses proper dimensions
+- [ ] No `break` or `continue` statements
+- [ ] Operations are FUSED (one kernel for multi-step ops)
+- [ ] Minimal dtype conversions (fp32 only for math ops)
+
+### **Priority: >2x SPEEDUP TARGET** ###
+Default to the FASTEST implementations (sigmoid GELU, Padé tanh, large BLOCK_SIZE, aggressive autotuning).
+Focus on memory bandwidth optimization and kernel fusion.
 """
 class BenchmarkRunner:
     def __init__(self, api_base_url: str = "http://localhost:8009"):
@@ -656,7 +903,7 @@ def main():
                         help="Max tokens (default: 4096)")
     parser.add_argument("--temperature", type=float, default=1.0,
                         help="Temperature (default: 0.0)")
-    parser.add_argument("--custom-prompt", type=str, default=CUSTOM_PROMPT,
+    parser.add_argument("--custom-prompt", type=str, default=HIGH_CORRECT_PROMPT,
                         help="Custom prompt to append to generation prompt (default: None)")
     parser.add_argument("--output-dir", type=str, default="results/benchmark",
                         help="Output directory (default: results/benchmark)")

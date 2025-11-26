@@ -38,6 +38,9 @@ class KernelBenchGradioApp:
             elif sample_selection.startswith("[level2]"):
                 level = "level2"
                 name = sample_selection[9:].strip()
+            elif sample_selection.startswith("[level6]"):
+                level = "level6"
+                name = sample_selection[9:].strip()
             else:
                 return ("", "")
             
@@ -109,7 +112,7 @@ class KernelBenchGradioApp:
             progress(0, desc="Request submitted, waiting for processing...")
             
             start_time = time.time()
-            max_wait_time = 300
+            max_wait_time = 1200
             
             while True:
                 if time.time() - start_time > max_wait_time:
@@ -673,4 +676,4 @@ def create_gradio_app(api_base_url: str = "http://localhost:8009") -> gr.Blocks:
 if __name__ == "__main__":
     api_url = os.environ.get("API_BASE_URL", "http://localhost:8009")
     app = create_gradio_app(api_base_url=api_url)
-    app.launch(server_name="0.0.0.0", server_port=7860, share=True)
+    app.launch(server_name="0.0.0.0", server_port=7861, share=True)

@@ -172,7 +172,7 @@ async def get_sample_files():
         samples = []
         base_path = "KernelBench"
         
-        for level in ["level1", "level2"]:
+        for level in ["level1", "level2", "level6"]:
             level_path = os.path.join(base_path, level)
             if os.path.exists(level_path):
                 files = sorted([f for f in os.listdir(level_path) if f.endswith('.py')])
@@ -194,8 +194,8 @@ async def get_sample_content(level: str, filename: str):
     """Get content of a specific sample file"""
     try:
         # Validate level
-        if level not in ["level1", "level2"]:
-            raise HTTPException(status_code=400, detail="Invalid level. Must be 'level1' or 'level2'")
+        # if level not in ["level1", "level2"]:
+        #     raise HTTPException(status_code=400, detail="Invalid level. Must be 'level1' or 'level2'")
         
         # Construct file path
         file_path = os.path.join("KernelBench", level, filename)

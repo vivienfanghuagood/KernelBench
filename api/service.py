@@ -368,6 +368,17 @@ def _worker_generate_kernel(request_id: str, repo_top_dir: str, eval_lock):
                     print(f"[Request {request_id}] >>> RELEASED GPU lock after evaluation (attempt {attempt})")
                 final_eval_result_str = str(eval_result)
                 
+                # Create simplified evaluation summary for frontend display
+                eval_summary = {
+                    'attempt': attempt + 1,
+                    'compiled': eval_result.compiled,
+                    'correctness': eval_result.correctness,
+                    'speedup': eval_result.speedup if eval_result.speedup > 0 else 0.0,
+                    'runtime': eval_result.runtime if eval_result.runtime else 0.0,
+                    'ref_runtime': eval_result.ref_runtime if eval_result.ref_runtime else 0.0,
+                    'timestamp': datetime.now().isoformat()
+                }
+                
                 # Update best correct result if this one is better
                 if eval_result.correctness and eval_result.compiled:
                     current_speedup = eval_result.speedup if eval_result.speedup > 0 else -1.0
@@ -386,7 +397,8 @@ def _worker_generate_kernel(request_id: str, repo_top_dir: str, eval_lock):
                         'generated_code': custom_kernel[:500] + '...' if len(custom_kernel) > 500 else custom_kernel,
                         'success': True,
                         'speedup': eval_result.speedup,
-                        'eval_result': final_eval_result_str
+                        'eval_result': final_eval_result_str,
+                        'eval_summary': eval_summary
                     })
                     db.update_request_status(
                         request_id, 
@@ -408,7 +420,8 @@ def _worker_generate_kernel(request_id: str, repo_top_dir: str, eval_lock):
                         'error': eval_error_msg,
                         'speedup': eval_result.speedup,
                         'success': False,
-                        'needs_optimization': True
+                        'needs_optimization': True,
+                        'eval_summary': eval_summary
                     })
                     
                     # Update database with current retry status
@@ -435,7 +448,8 @@ def _worker_generate_kernel(request_id: str, repo_top_dir: str, eval_lock):
                         'attempt': attempt,
                         'generated_code': custom_kernel[:500] + '...' if len(custom_kernel) > 500 else custom_kernel,
                         'error': eval_error_msg,
-                        'success': False
+                        'success': False,
+                        'eval_summary': eval_summary
                     })
                     
                     # Update database with current retry status

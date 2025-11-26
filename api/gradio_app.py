@@ -155,10 +155,30 @@ class KernelBenchGradioApp:
                     elapsed = int(time.time() - start_time)
                     current_retry = status_data.get("current_retry", 0)
                     max_retries = status_data.get("max_retries", 0)
+                    retry_history = status_data.get("retry_history", [])
+                    
+                    # Build progress description with latest evaluation results
+                    desc_parts = []
                     if current_retry > 0:
-                        progress(0.5, desc=f"🔄 Retrying with reflection... (Attempt {current_retry + 1}/{max_retries + 1}, {elapsed}s elapsed)")
+                        desc_parts.append(f"🔄 Attempt {current_retry + 1}/{max_retries + 1}")
                     else:
-                        progress(0.5, desc=f"🔄 Generating kernel... ({elapsed}s elapsed)")
+                        desc_parts.append(f"🔄 Generating kernel")
+                    
+                    # Add latest evaluation summary if available
+                    if retry_history:
+                        latest = retry_history[-1]
+                        eval_sum = latest.get('eval_summary')
+                        if eval_sum:
+                            compiled = "✅" if eval_sum.get('compiled') else "❌"
+                            correct = "✅" if eval_sum.get('correctness') else "❌"
+                            speedup = eval_sum.get('speedup', 0)
+                            desc_parts.append(f"| Compiled:{compiled} Correct:{correct}")
+                            if speedup > 0:
+                                speedup_icon = "🚀" if speedup >= 1.0 else "⚠️"
+                                desc_parts.append(f"Speedup:{speedup_icon}{speedup:.2f}x")
+                    
+                    desc_parts.append(f"({elapsed}s)")
+                    progress(0.5, desc=" ".join(desc_parts))
                 elif current_status == "completed":
                     progress(1.0, desc="✅ Generation completed!")
                     
@@ -193,7 +213,7 @@ class KernelBenchGradioApp:
             
             sections = []
             
-            sections.append("### Evaluation Results\n")
+            sections.append("### 📊 Final Evaluation Results\n")
             
             compiled_status = "✅ Compiled" if result.get("compiled") else "❌ Failed to Compile"
             correctness_status = "✅ Correct" if result.get("correctness") else "❌ Incorrect"
@@ -260,6 +280,44 @@ class KernelBenchGradioApp:
             
         except Exception as e:
             return f"⚠️ Error formatting results:\n```\n{eval_result_str}\n```"
+    
+    def format_attempt_history(self, retry_history: List[Dict]) -> str:
+        """Format attempt history for display"""
+        if not retry_history:
+            return ""
+        
+        sections = ["\n\n---\n\n### 🔄 Attempt History\n"]
+        
+        for entry in retry_history:
+            attempt_num = entry.get('attempt', 0) + 1
+            eval_sum = entry.get('eval_summary')
+            
+            if not eval_sum:
+                continue
+            
+            compiled = eval_sum.get('compiled', False)
+            correctness = eval_sum.get('correctness', False)
+            speedup = eval_sum.get('speedup', 0)
+            runtime = eval_sum.get('runtime', 0)
+            ref_runtime = eval_sum.get('ref_runtime', 0)
+            
+            # Status icons
+            compiled_icon = "✅" if compiled else "❌"
+            correct_icon = "✅" if correctness else "❌"
+            
+            sections.append(f"\n**Attempt {attempt_num}:**")
+            sections.append(f"- Compiled: {compiled_icon}")
+            sections.append(f"- Correctness: {correct_icon}")
+            
+            if compiled and correctness and speedup > 0:
+                speedup_icon = "🚀" if speedup >= 1.0 else "⚠️"
+                sections.append(f"- Speedup: {speedup_icon} **{speedup:.3f}x**")
+                sections.append(f"- Runtime: {runtime:.2f} ms (ref: {ref_runtime:.2f} ms)")
+            elif entry.get('error'):
+                error_msg = entry.get('error', '')[:200]
+                sections.append(f"- Issue: {error_msg}...")
+        
+        return "\n".join(sections)
     
     def parse_eval_string(self, s: str) -> Dict[str, Any]:
         import re
@@ -446,7 +504,13 @@ class KernelBenchGradioApp:
             if status == "completed":
                 ref_code = status_data.get("ref_arch_src", "No reference code")
                 generated_kernel = status_data.get("generated_kernel", "No kernel generated")
+                
+                # Format evaluation results with attempt history
                 eval_result = self.format_eval_results(status_data.get("eval_result", ""))
+                retry_history = status_data.get("retry_history", [])
+                if retry_history:
+                    eval_result += self.format_attempt_history(retry_history)
+                
                 error_message = status_data.get("error_message", "")
                 msg = f"✅ Request `{request_id[:12]}...` loaded successfully"
                 return (ref_code, generated_kernel, eval_result, error_message, msg)

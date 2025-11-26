@@ -191,8 +191,14 @@ def _set_process_limits():
         # resource module not available on Windows or operation not permitted
         pass
 
-def _worker_generate_kernel(request_id: str, repo_top_dir: str):
-    """Worker function to generate kernel in a separate process"""
+def _worker_generate_kernel(request_id: str, repo_top_dir: str, eval_lock):
+    """Worker function to generate kernel in a separate process
+    
+    Args:
+        request_id: Unique identifier for the generation request
+        repo_top_dir: Top directory of the repository
+        eval_lock: Multiprocessing lock to ensure exclusive GPU access during evaluation
+    """
     # Set up signal handler for graceful shutdown
     def signal_handler(signum, frame):
         db.update_request_status(
@@ -341,18 +347,25 @@ def _worker_generate_kernel(request_id: str, repo_top_dir: str):
                 )
                 continue
             
-            # Evaluate kernel
+            # Evaluate kernel with exclusive GPU access
             eval_error_msg = None
             try:
-                eval_result = eval_kernel_against_ref(
-                    ref_arch_src,
-                    custom_kernel,
-                    verbose=False,
-                    measure_performance=True,
-                    num_correct_trials=APIConfig.DEFAULT_NUM_CORRECT_TRIALS,
-                    num_perf_trials=APIConfig.DEFAULT_NUM_PERF_TRIALS,
-                    backend=backend,
-                )
+                # Acquire lock before evaluation to ensure GPU exclusivity
+                # This prevents multiple evaluations from running simultaneously
+                # If another worker is evaluating, this will WAIT until that completes
+                print(f"[Request {request_id}] Waiting for GPU lock... (attempt {attempt})")
+                with eval_lock:
+                    print(f"[Request {request_id}] >>> ACQUIRED GPU lock for evaluation (attempt {attempt})")
+                    eval_result = eval_kernel_against_ref(
+                        ref_arch_src,
+                        custom_kernel,
+                        verbose=False,
+                        measure_performance=True,
+                        num_correct_trials=APIConfig.DEFAULT_NUM_CORRECT_TRIALS,
+                        num_perf_trials=APIConfig.DEFAULT_NUM_PERF_TRIALS,
+                        backend=backend,
+                    )
+                    print(f"[Request {request_id}] >>> RELEASED GPU lock after evaluation (attempt {attempt})")
                 final_eval_result_str = str(eval_result)
                 
                 # Update best correct result if this one is better
@@ -502,12 +515,25 @@ class KernelGenerationService:
         self.max_workers = max_workers or APIConfig.MAX_WORKERS
         self.active_processes: Dict[str, Dict[str, Any]] = {}
         
-        # Set multiprocessing start method
+        # Set multiprocessing start method FIRST
+        # This is critical for Windows compatibility
         try:
             mp.set_start_method('spawn', force=True)
         except RuntimeError:
-            # Already set
+            # Already set, this is fine
             pass
+        
+        # Delay manager and lock creation until first use
+        # This avoids issues with importing the module
+        self.manager = None
+        self.eval_lock = None
+    
+    def _get_eval_lock(self):
+        """Lazily create and return the evaluation lock"""
+        if self.eval_lock is None:
+            self.manager = mp.Manager()
+            self.eval_lock = self.manager.Lock()
+        return self.eval_lock
     
     def _cleanup_finished_processes(self):
         """Remove finished processes from active_processes"""
@@ -622,9 +648,10 @@ class KernelGenerationService:
         )
         
         # Start generation in separate process
+        # Pass eval_lock to ensure exclusive GPU access during evaluation
         process = mp.Process(
             target=_worker_generate_kernel,
-            args=(request_id, self.repo_top_dir),
+            args=(request_id, self.repo_top_dir, self._get_eval_lock()),
             daemon=False  # Don't make it daemon to ensure cleanup
         )
         process.start()
@@ -632,6 +659,8 @@ class KernelGenerationService:
             'process': process,
             'start_time': datetime.now()
         }
+        
+        print(f"[Service] Started worker for request {request_id}. Active workers: {len(self.active_processes)}/{self.max_workers}")
         
         return request_id
     
@@ -674,6 +703,13 @@ class KernelGenerationService:
                     proc.kill()
                     proc.join()
         self.active_processes.clear()
+        
+        # Shutdown manager if it was created
+        if self.manager is not None:
+            try:
+                self.manager.shutdown()
+            except:
+                pass
     
     def get_active_workers_count(self) -> int:
         """Get the number of currently active worker processes"""

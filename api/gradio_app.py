@@ -634,7 +634,10 @@ class KernelBenchGradioApp:
                             gpu_arch, max_tokens, temperature, custom_prompt_input, 
                             problem_name_state, max_retries, target_speedup
                         ],
-                        outputs=[generated_kernel, eval_results, status_msg, request_id_state]
+                        outputs=[generated_kernel, eval_results, status_msg, request_id_state],
+                        # Enable queue for long-running tasks (kernel generation can take several minutes)
+                        # Allow multiple concurrent requests to match backend capability
+                        concurrency_limit=10  # Allow up to 10 concurrent executions
                     )
                 
                 with gr.Tab("Request History"):
@@ -729,4 +732,8 @@ def create_gradio_app(api_base_url: str = "http://localhost:8009") -> gr.Blocks:
 if __name__ == "__main__":
     api_url = os.environ.get("API_BASE_URL", "http://localhost:8009")
     app = create_gradio_app(api_base_url=api_url)
+    # Enable queue to handle long-running kernel generation tasks
+    # Set max_size to allow multiple concurrent requests (default is 1)
+    # This should match or exceed the backend's MAX_WORKERS setting
+    app.queue(max_size=20)  # Allow up to 20 requests in queue
     app.launch(server_name="0.0.0.0", server_port=7861, share=True)

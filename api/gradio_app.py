@@ -26,6 +26,18 @@ class KernelBenchGradioApp:
             print(f"Error loading samples: {e}")
             return ["-- Select a sample to load --"]
     
+    def load_prompt_templates(self) -> Dict[str, Dict[str, str]]:
+        """Load available prompt templates from API"""
+        try:
+            response = requests.get(f"{self.api_base_url}/api/prompts")
+            if response.ok:
+                data = response.json()
+                return data.get("prompts", {})
+            return {}
+        except Exception as e:
+            print(f"Error loading prompt templates: {e}")
+            return {}
+    
     def load_sample_content(self, sample_selection: str) -> Tuple[str, str]:
         """Load sample content and return both content and problem name"""
         if sample_selection == "-- Select a sample to load --":
@@ -65,6 +77,16 @@ class KernelBenchGradioApp:
         }
         return model_map.get(server_type, "gpt-5")
     
+    def get_prompt_template_content(self, template_key: str) -> str:
+        """Get the content of a selected prompt template"""
+        if template_key == "-- None (use default) --":
+            return ""
+        
+        templates = self.load_prompt_templates()
+        if template_key in templates:
+            return templates[template_key].get("content", "")
+        return ""
+    
     def submit_generation(
         self,
         ref_arch_src: str,
@@ -77,6 +99,7 @@ class KernelBenchGradioApp:
         custom_prompt: str,
         problem_name: str,
         max_retries: int,
+        target_speedup: float,
         progress=gr.Progress()
     ) -> Tuple[str, str, str, str]:
         if not ref_arch_src or not ref_arch_src.strip():
@@ -93,7 +116,8 @@ class KernelBenchGradioApp:
                 "temperature": float(temperature),
                 "custom_prompt": custom_prompt if custom_prompt and custom_prompt.strip() else None,
                 "problem_name": problem_name if problem_name and problem_name.strip() else None,
-                "max_retries": int(max_retries) if max_retries is not None else None
+                "max_retries": int(max_retries) if max_retries is not None else None,
+                "target_speedup": float(target_speedup)
             }
             
             response = requests.post(
@@ -485,6 +509,18 @@ class KernelBenchGradioApp:
                                 max_lines=20
                             )
                             
+                            # Prompt Template Selector
+                            prompt_templates = self.load_prompt_templates()
+                            template_choices = ["-- None (use default) --"] + list(prompt_templates.keys())
+                            template_descriptions = {key: val.get("name", key) for key, val in prompt_templates.items()}
+                            
+                            prompt_template_selector = gr.Dropdown(
+                                choices=template_choices,
+                                value="-- None (use default) --",
+                                label="Prompt Template",
+                                info="Select a pre-defined optimization template (will be appended to custom prompt)"
+                            )
+                            
                             custom_prompt_input = gr.Textbox(
                                 label="Custom Prompt (Optional)",
                                 placeholder="Add custom instructions to append to the generation prompt...",
@@ -543,6 +579,15 @@ class KernelBenchGradioApp:
                                     maximum=10,
                                     info="Number of times to retry generation with error feedback"
                                 )
+                                
+                                target_speedup = gr.Number(
+                                    label="Target Speedup",
+                                    value=1.0,
+                                    minimum=0.1,
+                                    maximum=10.0,
+                                    step=0.1,
+                                    info="Target speedup threshold for early exit (1.0 = same as baseline)"
+                                )
                             
                             generate_btn = gr.Button("🚀 Generate Kernel", variant="primary", size="lg")
                         
@@ -569,6 +614,12 @@ class KernelBenchGradioApp:
                         outputs=[ref_arch_src, problem_name_state]
                     )
                     
+                    prompt_template_selector.change(
+                        fn=self.get_prompt_template_content,
+                        inputs=[prompt_template_selector],
+                        outputs=[custom_prompt_input]
+                    )
+                    
                     server_type.change(
                         fn=self.update_model_name,
                         inputs=[server_type],
@@ -579,7 +630,8 @@ class KernelBenchGradioApp:
                         fn=self.submit_generation,
                         inputs=[
                             ref_arch_src, backend, server_type, model_name,
-                            gpu_arch, max_tokens, temperature, custom_prompt_input, problem_name_state, max_retries
+                            gpu_arch, max_tokens, temperature, custom_prompt_input, 
+                            problem_name_state, max_retries, target_speedup
                         ],
                         outputs=[generated_kernel, eval_results, status_msg, request_id_state]
                     )

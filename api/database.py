@@ -45,6 +45,7 @@ class DatabaseManager:
                 max_retries INTEGER DEFAULT 3,
                 current_retry INTEGER DEFAULT 0,
                 retry_history TEXT,
+                target_speedup REAL DEFAULT 1.0,
                 status TEXT NOT NULL DEFAULT 'pending',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 started_at TIMESTAMP,
@@ -67,7 +68,8 @@ class DatabaseManager:
                                 temperature: float = 0.0,
                                 custom_prompt: str = None,
                                 problem_name: str = None,
-                                max_retries: int = 3) -> str:
+                                max_retries: int = 3,
+                                target_speedup: float = 1.0) -> str:
         """Create a new generation request and return the request ID"""
         request_id = str(uuid.uuid4())
         conn = self.get_connection()
@@ -75,10 +77,10 @@ class DatabaseManager:
         
         cursor.execute("""
             INSERT INTO generation_requests 
-            (id, ref_arch_src, gpu_arch, backend, model_name, server_type, max_tokens, temperature, custom_prompt, problem_name, max_retries, current_retry, retry_history, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, ref_arch_src, gpu_arch, backend, model_name, server_type, max_tokens, temperature, custom_prompt, problem_name, max_retries, current_retry, retry_history, target_speedup, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (request_id, ref_arch_src, json.dumps(gpu_arch), backend, model_name, 
-              server_type, max_tokens, temperature, custom_prompt, problem_name, max_retries, 0, json.dumps([]), GenerationStatus.PENDING.value))
+              server_type, max_tokens, temperature, custom_prompt, problem_name, max_retries, 0, json.dumps([]), target_speedup, GenerationStatus.PENDING.value))
         
         conn.commit()
         return request_id

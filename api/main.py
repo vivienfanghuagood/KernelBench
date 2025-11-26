@@ -38,6 +38,7 @@ class GenerationRequest(BaseModel):
     custom_prompt: Optional[str] = None
     problem_name: Optional[str] = None
     max_retries: Optional[int] = None  # None means use default from APIConfig
+    target_speedup: Optional[float] = 1.0  # Target speedup threshold
 
 class GenerationResponse(BaseModel):
     model_config = {"protected_namespaces": ()}
@@ -63,6 +64,7 @@ class StatusResponse(BaseModel):
     max_retries: Optional[int]
     current_retry: Optional[int]
     retry_history: Optional[list]
+    target_speedup: Optional[float]
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
@@ -113,7 +115,8 @@ async def create_generation_request(request: GenerationRequest, background_tasks
             temperature=request.temperature,
             custom_prompt=request.custom_prompt,
             problem_name=request.problem_name,
-            max_retries=request.max_retries
+            max_retries=request.max_retries,
+            target_speedup=request.target_speedup
         )
         
         return GenerationResponse(
@@ -148,7 +151,8 @@ async def get_generation_status(request_id: str):
             problem_name=request_data.get('problem_name'),
             max_retries=request_data.get('max_retries'),
             current_retry=request_data.get('current_retry'),
-            retry_history=request_data.get('retry_history')
+            retry_history=request_data.get('retry_history'),
+            target_speedup=request_data.get('target_speedup')
         )
         
     except HTTPException:
@@ -252,6 +256,34 @@ async def get_workers_info():
         "capacity_remaining": max_workers - active_workers,
         "utilization": f"{(active_workers / max_workers * 100):.1f}%"
     }
+
+@app.get("/api/prompts")
+async def get_prompt_templates():
+    """Get available prompt templates from prompts.py"""
+    try:
+        from api.prompts import QUANT_OP_PROMPT, HIGH_CORRECT_PROMPT, HIGH_PERF_PROMPT
+        
+        prompts = {
+            "QUANT_OP_PROMPT": {
+                "name": "Quantization Operations Prompt",
+                "description": "Optimized for FP8/quantized operations on AMD GPUs with hardware-aware tuning",
+                "content": QUANT_OP_PROMPT
+            },
+            "HIGH_CORRECT_PROMPT": {
+                "name": "High Correctness Prompt",
+                "description": "Prioritizes correctness with comprehensive error handling and validation",
+                "content": HIGH_CORRECT_PROMPT
+            },
+            "HIGH_PERF_PROMPT": {
+                "name": "High Performance Prompt",
+                "description": "Aggressive optimization targeting >2x speedup with fast approximations",
+                "content": HIGH_PERF_PROMPT
+            }
+        }
+        
+        return {"prompts": prompts}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     uvicorn.run(

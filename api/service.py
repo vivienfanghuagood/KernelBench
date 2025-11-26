@@ -235,6 +235,7 @@ def _worker_generate_kernel(request_id: str, repo_top_dir: str):
         max_retries = request_data.get('max_retries', APIConfig.DEFAULT_MAX_RETRIES)
         current_retry = request_data.get('current_retry', 0)
         retry_history = request_data.get('retry_history', [])
+        target_speedup = request_data.get('target_speedup', 1.0)
         
         # Set GPU architecture
         if gpu_arch:
@@ -363,10 +364,10 @@ def _worker_generate_kernel(request_id: str, repo_top_dir: str):
                         best_correct_eval_result_str = final_eval_result_str
                 
                 # Check if generation was successful
-                # Success criteria: correctness=True AND compiled=True AND speedup > 1.1
-                # Continue optimization if speedup <= 1.0
-                if eval_result.correctness and eval_result.compiled and eval_result.speedup > 1.1:
-                    # Success! Correct and faster than reference
+                # Success criteria: correctness=True AND compiled=True AND speedup >= target_speedup
+                # Continue optimization if speedup < target_speedup
+                if eval_result.correctness and eval_result.compiled and eval_result.speedup >= target_speedup:
+                    # Success! Correct and meets target speedup
                     retry_history.append({
                         'attempt': attempt,
                         'generated_code': custom_kernel[:500] + '...' if len(custom_kernel) > 500 else custom_kernel,
@@ -384,8 +385,8 @@ def _worker_generate_kernel(request_id: str, repo_top_dir: str):
                     )
                     return  # Exit successfully
                 elif eval_result.correctness and eval_result.compiled:
-                    # Correct but too slow (speedup <= 1.0) - need optimization
-                    eval_error_msg = f"Kernel is correct but too slow. Speedup: {eval_result.speedup:.3f}x (need > 1.0x)"
+                    # Correct but below target speedup - need optimization
+                    eval_error_msg = f"Kernel is correct but below target. Speedup: {eval_result.speedup:.3f}x (target: {target_speedup:.3f}x)"
                     
                     # Record this attempt in history
                     retry_history.append({
@@ -569,7 +570,8 @@ class KernelGenerationService:
                                 temperature: float = 0.0,
                                 custom_prompt: str = None,
                                 problem_name: str = None,
-                                max_retries: int = None) -> str:
+                                max_retries: int = None,
+                                target_speedup: float = 1.0) -> str:
         """Submit a new kernel generation request using multiprocessing
         
         Args:
@@ -583,6 +585,7 @@ class KernelGenerationService:
             custom_prompt: Optional custom prompt to append
             problem_name: Optional problem name
             max_retries: Maximum number of retries on failure (default: APIConfig.DEFAULT_MAX_RETRIES)
+            target_speedup: Target speedup threshold for early exit (default: 1.0)
         
         Returns:
             request_id: Unique identifier for the generation request
@@ -614,7 +617,8 @@ class KernelGenerationService:
             temperature=temperature,
             custom_prompt=custom_prompt,
             problem_name=problem_name,
-            max_retries=max_retries
+            max_retries=max_retries,
+            target_speedup=target_speedup
         )
         
         # Start generation in separate process

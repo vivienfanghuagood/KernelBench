@@ -545,7 +545,7 @@ class KernelBenchGradioApp:
             return ("", "", "", "", f"❌ Error: {str(e)}")
     
     def create_interface(self) -> gr.Blocks:
-        with gr.Blocks(title="KernelBench - GPU Kernel Generator", theme=gr.themes.Soft()) as app:
+        with gr.Blocks(title="KernelBench - GPU Kernel Generator", theme=gr.themes.Base()) as app:
             gr.Markdown(
                 """
                 # 🚀 KernelBench GPU Kernel Generator
@@ -615,8 +615,8 @@ class KernelBenchGradioApp:
                                 )
                                 
                                 gpu_arch = gr.Dropdown(
-                                    choices=["mi300", "Ada", "Hopper"],
-                                    value="Ada",
+                                    choices=["CDNA", "RDNA"],
+                                    value="CDNA",
                                     label="GPU Architecture"
                                 )
                             
@@ -645,7 +645,7 @@ class KernelBenchGradioApp:
                                     info="Number of times to retry generation with error feedback"
                                 )
                                 
-                                target_speedup = gr.Number(
+                                target_speedup = gr.Slider(
                                     label="Target Speedup",
                                     value=1.0,
                                     minimum=0.1,

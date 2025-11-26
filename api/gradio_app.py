@@ -79,13 +79,13 @@ class KernelBenchGradioApp:
     
     def get_prompt_template_content(self, template_key: str) -> str:
         """Get the content of a selected prompt template"""
-        if template_key == "-- None (use default) --":
-            return ""
+        if template_key == "-- Select template to load --":
+            return gr.update()  # No change
         
         templates = self.load_prompt_templates()
         if template_key in templates:
             return templates[template_key].get("content", "")
-        return ""
+        return gr.update()  # No change
     
     def submit_generation(
         self,
@@ -509,23 +509,24 @@ class KernelBenchGradioApp:
                                 max_lines=20
                             )
                             
-                            # Prompt Template Selector
-                            prompt_templates = self.load_prompt_templates()
-                            template_choices = ["-- None (use default) --"] + list(prompt_templates.keys())
-                            template_descriptions = {key: val.get("name", key) for key, val in prompt_templates.items()}
-                            
-                            prompt_template_selector = gr.Dropdown(
-                                choices=template_choices,
-                                value="-- None (use default) --",
-                                label="Prompt Template",
-                                info="Select a pre-defined optimization template (will be appended to custom prompt)"
-                            )
-                            
+                            # Custom Prompt with Template Loader
+                            with gr.Row():
+                                prompt_templates = self.load_prompt_templates()
+                                template_choices = ["-- Select template to load --"] + list(prompt_templates.keys())
+                                
+                                prompt_template_btn = gr.Dropdown(
+                                    choices=template_choices,
+                                    value="-- Select template to load --",
+                                    label="Load Prompt Template",
+                                    info="Select a template to load into custom prompt (you can edit after loading)",
+                                    scale=3
+                                )
+                                
                             custom_prompt_input = gr.Textbox(
                                 label="Custom Prompt (Optional)",
-                                placeholder="Add custom instructions to append to the generation prompt...",
-                                lines=3,
-                                max_lines=5
+                                placeholder="Add custom instructions or load a template above...",
+                                lines=5,
+                                max_lines=10
                             )
                             
                             problem_name_state = gr.State("")
@@ -614,9 +615,9 @@ class KernelBenchGradioApp:
                         outputs=[ref_arch_src, problem_name_state]
                     )
                     
-                    prompt_template_selector.change(
+                    prompt_template_btn.change(
                         fn=self.get_prompt_template_content,
-                        inputs=[prompt_template_selector],
+                        inputs=[prompt_template_btn],
                         outputs=[custom_prompt_input]
                     )
                     

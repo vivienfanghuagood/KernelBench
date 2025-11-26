@@ -10,9 +10,9 @@ QUANT_OP_PROMPT = """
   - **Critical**: Using wrong FP8 format causes silent upcast to FP16, degrading performance significantly
 
 ### Memory Calculation Formula
-```
+~~~
 Shared_Memory = (BLOCK_M * BLOCK_K + BLOCK_N * BLOCK_K) * dtype_size * num_stages
-```
+~~~
 
 **Example:**
 - Config: BLOCK_M=256, BLOCK_N=256, BLOCK_K=64, num_stages=4, dtype=FP8 (1 byte)
@@ -22,12 +22,12 @@ Shared_Memory = (BLOCK_M * BLOCK_K + BLOCK_N * BLOCK_K) * dtype_size * num_stage
 ### Native Precision Utilization
 
 **Platform Detection for FP8:**
-```python
+~~~
 import torch
 import subprocess
 
 def get_fp8_dtype():
-    """Auto-detect correct FP8 dtype for current AMD GPU."""
+    # Auto-detect correct FP8 dtype for current AMD GPU.
     try:
         # Get GPU architecture
         result = subprocess.run(['rocminfo'], capture_output=True, text=True)
@@ -48,33 +48,33 @@ def get_fp8_dtype():
 fp8_dtype = get_fp8_dtype()
 x_fp8 = x.to(fp8_dtype)
 w_fp8 = w.to(fp8_dtype)
-```
+~~~
 
 **DO:** Use native FP8 matrix operations with correct dtype
-```python
+~~~
 x_fp8 = tl.load(x_ptrs, mask=x_mask, other=0.0)  # Load as FP8
 w_fp8 = tl.load(w_ptrs, mask=w_mask, other=0.0)
 result = tl.dot(x_fp8, tl.trans(w_fp8), out_dtype=tl.float32)  # FP8→FP32 matmul
-```
+~~~
 
 **DON'T:** Convert to higher precision before computation
-```python
+~~~
 x_fp16 = x_fp8.to(tl.float16)  # ❌ Wastes memory and compute
 result = tl.dot(x_fp16, w_fp16)
-```
+~~~
 
 **DON'T:** Use wrong FP8 format for target GPU
-```python
+~~~
 # ❌ Will cause upcast to FP16 on gfx950 (MI355)
 x_fp8 = x.to(torch.float8_e4m3fnuz)  # AMD-specific format
-```
+~~~
 
 ## 2. Autotuning Configuration Strategy
 
 ### Search Space Design
 Target 6-10 configurations covering different workload characteristics:
 
-```python
+~~~
 @triton.autotune(
     configs=[
         # Large tiles for throughput
@@ -101,7 +101,7 @@ Target 6-10 configurations covering different workload characteristics:
     ],
     key=['M', 'N', 'K'],
 )
-```
+~~~
 
 ### Parameter Guidelines
 - **BLOCK_M/N**: 64-256 (128-256 optimal for most cases)
@@ -113,7 +113,7 @@ Target 6-10 configurations covering different workload characteristics:
 ## 3. Kernel Structure Optimization
 
 ### Block Swizzling for Cache Locality
-```python
+~~~
 # Compute with swizzling
 num_pid_m = tl.cdiv(M, BLOCK_M)
 num_pid_n = tl.cdiv(N, BLOCK_N)
@@ -123,10 +123,10 @@ first_pid_m = group_id * GROUP_M
 group_size_m = min(num_pid_m - first_pid_m, GROUP_M)
 pid_m = first_pid_m + (pid % group_size_m)
 pid_n = (pid % num_pid_in_group) // group_size_m
-```
+~~~
 
 ### Efficient Masking Pattern
-```python
+~~~
 # Use separate masks for data and scaling
 k_mask = (k + offs_k) < K
 x_mask = (offs_m[:, None] < M) & k_mask[None, :]
@@ -135,12 +135,12 @@ w_mask = (offs_n[:, None] < N) & k_mask[None, :]
 # Load with proper default values
 x_fp8 = tl.load(x_ptrs, mask=x_mask, other=0.0)  # Use 0.0, not 0
 w_fp8 = tl.load(w_ptrs, mask=w_mask, other=0.0)
-```
+~~~
 
 **Critical:** Use `other=0.0` instead of `other=0` to avoid type casting errors with FP8.
 
 ### Accumulation Strategy
-```python
+~~~
 # Always accumulate in FP32 for numerical stability
 acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
 
@@ -151,7 +151,7 @@ for k in range(0, K, BLOCK_K):
 
 # Convert to output dtype only at the end
 out = acc.to(tl.float16)
-```
+~~~
 
 ## 4. Block-Wise Scaling Optimization
 
@@ -163,7 +163,7 @@ Given:
 - Weight scales `w_scale`: [scale_n, scale_k] where `scale_n = N // BLOCK_SIZE_N`
 
 ### Naive Approach (SLOW ❌)
-```python
+~~~
 # Load scales for entire K dimension: [BLOCK_M, BLOCK_K]
 x_scale_vals = tl.load(x_scale_ptrs, ...)  # Repeated loads
 w_scale_vals = tl.load(w_scale_ptrs, ...)
@@ -171,12 +171,12 @@ w_scale_vals = tl.load(w_scale_ptrs, ...)
 # Matrix multiplication for scaling (expensive!)
 scale_matrix = tl.dot(x_scale_vals, tl.trans(w_scale_vals))  # [BLOCK_M, BLOCK_N]
 acc += fp8_result * scale_matrix
-```
+~~~
 
 ### Optimized Approach (FAST ✓)
 **Key Insight:** Scales are constant within each block, so we can use outer product:
 
-```python
+~~~
 # Load scale blocks
 scale_k_idx = (k + offs_k) // SCALE_BLOCK_K
 x_scale_ptrs = x_scale_ptr + (offs_m[:, None] * stride_xscale_m + 
@@ -197,7 +197,7 @@ scale_factor = x_scale_avg[:, None] * w_scale_avg[None, :]
 
 # Apply scaling (single element-wise multiplication)
 acc += fp8_result * scale_factor
-```
+~~~
 
 **Performance Impact:** 2-3x faster than matrix multiplication approach!
 
@@ -205,47 +205,47 @@ acc += fp8_result * scale_factor
 
 ### Issue 1: Type Casting Errors
 **Error:** `cannot cast int32 to fp8e4m3fnuz`
-```python
+~~~
 x_fp8 = tl.load(x_ptrs, mask=x_mask, other=0)  # ❌ other=0 is int32
-```
+~~~
 **Solution:**
-```python
+~~~
 x_fp8 = tl.load(x_ptrs, mask=x_mask, other=0.0)  # ✓ other=0.0 is float
-```
+~~~
 
 ### Issue 2: Shared Memory Overflow
 **Error:** `Allocation requires 122880 bytes but only 65536 available`
 
 **Solution:** Reduce memory footprint
-```python
+~~~
 # Before (exceeds limit)
 BLOCK_M=256, BLOCK_N=256, BLOCK_K=64, num_stages=4
 
 # After (within limit)
 BLOCK_M=128, BLOCK_N=128, BLOCK_K=64, num_stages=2
-```
+~~~
 
 ### Issue 3: Precision Loss
 **Problem:** Accumulated errors in long reduction chains
 
 **Solution:** Use FP32 accumulation
-```python
+~~~
 acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)  # Not FP16!
 result = tl.dot(x_fp8, w_fp8, out_dtype=tl.float32)   # Output in FP32
 acc += result
 out = acc.to(output_dtype)  # Convert only at the end
-```
+~~~
 
 ### Issue 4: Poor Performance with Small BLOCK_K
 **Problem:** In quantized kernels, small BLOCK_K increases scaling overhead
 
 **Solution:** Use larger BLOCK_K (64-128) to amortize the cost
-```python
+~~~
 # Quantized ops: prefer BLOCK_K >= 64
 triton.Config({'BLOCK_K': 128, ...})  # Better amortization
 triton.Config({'BLOCK_K': 64, ...})   # Acceptable
 triton.Config({'BLOCK_K': 32, ...})   # ❌ Too much overhead
-```
+~~~
 
 ### Issue 5: FP8 Format Mismatch (AMD GPUs)
 **Error/Warning:** `fp8e4b8 is AMD gfx942 specific and not supported on gfx950 so it's upcasted to fp16`
@@ -253,11 +253,11 @@ triton.Config({'BLOCK_K': 32, ...})   # ❌ Too much overhead
 **Problem:** Using `torch.float8_e4m3fnuz` (AMD-specific) on newer GPUs (MI355/gfx950+)
 
 **Solution:** Detect GPU architecture and use correct FP8 format
-```python
+~~~
 import subprocess
 
 def get_fp8_dtype():
-    """Auto-detect correct FP8 dtype for current AMD GPU."""
+    # Auto-detect correct FP8 dtype for current AMD GPU.
     try:
         result = subprocess.run(['rocminfo'], capture_output=True, text=True)
         output = result.stdout
@@ -275,14 +275,14 @@ def get_fp8_dtype():
 fp8_dtype = get_fp8_dtype()
 x = (torch.rand((m, k), dtype=torch.float16, device="cuda") / 10).to(fp8_dtype)
 weight = (torch.rand((n, k), dtype=torch.float16, device="cuda") / 10).to(fp8_dtype)
-```
+~~~
 
 **Alternative:** Environment-based configuration
-```python
+~~~
 import os
 
 def get_fp8_dtype():
-    """Get FP8 dtype with optional override via environment variable."""
+    # Get FP8 dtype with optional override via environment variable.
     # Allow manual override: export AITER_GPU_ARCH=gfx950
     gpu_arch = os.environ.get('AITER_GPU_ARCH', '')
     
@@ -299,7 +299,7 @@ def get_fp8_dtype():
         except:
             pass
         return getattr(torch, 'float8_e4m3fnuz', torch.float8_e4m3fn)
-```
+~~~
 
 ## Summary
 
@@ -323,7 +323,7 @@ You MUST guarantee the correctness of ModelNew. Do NOT cheat by simplifying logi
 **ERROR 1: Numerical Accuracy Issues (GELU, Normalization, Softmax)**
 - ❌ WRONG: Using fp16 directly for `tl.exp()`, `tl.log()`, or complex math operations
 - ✅ CORRECT: Always cast to fp32 for intermediate calculations, then cast back:
-  ```python
+  ```
   # For GELU, Softmax, LayerNorm, RMSNorm, etc.
   x_fp32 = x.to(tl.float32)
   result = compute_with_exp_log(x_fp32)  # Do math in fp32
@@ -336,12 +336,12 @@ You MUST guarantee the correctness of ModelNew. Do NOT cheat by simplifying logi
 
 **ERROR 2: Missing @triton.jit Decorator**
 - ❌ WRONG: Helper functions without decorator that use Triton operations
-  ```python
+  ```
   def helper(x):  # Missing decorator!
       return tl.exp(x)
   ```
 - ✅ CORRECT: Add `@triton.jit` to ALL functions using Triton ops:
-  ```python
+  ```
   @triton.jit
   def helper(x):
       return tl.exp(x)
@@ -359,11 +359,11 @@ You MUST guarantee the correctness of ModelNew. Do NOT cheat by simplifying logi
 
 **ERROR 4: Tensor Indexing Issues**
 - ❌ WRONG: Using scalar indices on multi-dimensional tensors
-  ```python
+  ```
   qk += Q_block[:, k][:, None] * K_block[None, :, k]  # k is int32 scalar!
   ```
 - ✅ CORRECT: Use proper slicing or tl.arange for indexing:
-  ```python
+  ```
   # Option 1: Expand dimensions properly
   q_vec = tl.load(Q_ptr + row_idx * stride + k)  # Load as 1D
   k_vec = tl.load(K_ptr + k * stride + col_idx)
@@ -376,13 +376,13 @@ You MUST guarantee the correctness of ModelNew. Do NOT cheat by simplifying logi
 
 **ERROR 5: Control Flow Restrictions**
 - ❌ FORBIDDEN: `continue` and `break` statements in Triton kernels
-  ```python
+  ```
   for i in range(N):
       if condition:
           continue  # NOT ALLOWED!
   ```
 - ✅ CORRECT: Use conditional execution with tl.where or restructure logic:
-  ```python
+  ```
   for i in range(N):
       mask = condition
       result = tl.where(mask, compute_A(x), compute_B(x))
@@ -479,7 +479,7 @@ You MUST achieve >2x speedup over PyTorch baseline while maintaining correctness
 **ERROR 1: Numerical Accuracy Issues (GELU, Normalization, Softmax)**
 - ❌ WRONG: Using fp16 directly for `tl.exp()`, `tl.log()`, or complex math operations
 - ✅ CORRECT: Always cast to fp32 for intermediate calculations, then cast back:
-  ```python
+  ```
   # For GELU, Softmax, LayerNorm, RMSNorm, etc.
   x_fp32 = x.to(tl.float32)
   result = compute_with_exp_log(x_fp32)  # Do math in fp32
@@ -492,12 +492,12 @@ You MUST achieve >2x speedup over PyTorch baseline while maintaining correctness
 
 **ERROR 2: Missing @triton.jit Decorator**
 - ❌ WRONG: Helper functions without decorator that use Triton operations
-  ```python
+  ```
   def helper(x):  # Missing decorator!
       return tl.exp(x)
   ```
 - ✅ CORRECT: Add `@triton.jit` to ALL functions using Triton ops:
-  ```python
+  ```
   @triton.jit
   def helper(x):
       return tl.exp(x)
@@ -515,13 +515,13 @@ You MUST achieve >2x speedup over PyTorch baseline while maintaining correctness
 
 **ERROR 4: Inefficient Memory Access Patterns**
 - ❌ WRONG: Non-coalesced loads (strided, scattered)
-  ```python
+  ```
   # BAD: Each thread loads from non-contiguous locations
   offsets = row_idx * stride + col_idx  # If threads have different row_idx
   data = tl.load(ptr + offsets)
   ```
 - ✅ CORRECT: Coalesced loads (contiguous blocks)
-  ```python
+  ```
   # GOOD: All threads in a warp load contiguous memory
   block_start = tl.program_id(0) * BLOCK_SIZE
   offsets = block_start + tl.arange(0, BLOCK_SIZE)  # Contiguous!
@@ -530,11 +530,11 @@ You MUST achieve >2x speedup over PyTorch baseline while maintaining correctness
 
 **ERROR 5: Tensor Indexing Issues**
 - ❌ WRONG: Using scalar indices on multi-dimensional tensors
-  ```python
+  ```
   qk += Q_block[:, k][:, None] * K_block[None, :, k]  # k is int32 scalar!
   ```
 - ✅ CORRECT: Use proper slicing or tl.arange for indexing:
-  ```python
+  ```
   # Option 1: Expand dimensions properly
   q_vec = tl.load(Q_ptr + row_idx * stride + k)  # Load as 1D
   k_vec = tl.load(K_ptr + k * stride + col_idx)
@@ -547,13 +547,13 @@ You MUST achieve >2x speedup over PyTorch baseline while maintaining correctness
 
 **ERROR 6: Control Flow Restrictions**
 - ❌ FORBIDDEN: `continue` and `break` statements in Triton kernels
-  ```python
+  ```
   for i in range(N):
       if condition:
           continue  # NOT ALLOWED!
   ```
 - ✅ CORRECT: Use conditional execution with tl.where or restructure logic:
-  ```python
+  ```
   for i in range(N):
       mask = condition
       result = tl.where(mask, compute_A(x), compute_B(x))
@@ -562,7 +562,7 @@ You MUST achieve >2x speedup over PyTorch baseline while maintaining correctness
 ### **ULTRA-FAST Activation Functions** ###
 
 **1. GELU - Multiple Speed Tiers (CRITICAL for >2x speedup):**
-```python
+~~~
 # FASTEST: Sigmoid approximation - ALWAYS use this by default!
 @triton.jit
 def ultra_fast_gelu(x):
@@ -580,10 +580,10 @@ def fast_gelu_no_exp(x):
     x2 = inner * inner
     tanh_val = inner * (27.0 + x2) / (27.0 + 9.0 * x2)
     return 0.5 * x * (1.0 + tanh_val)
-```
+~~~
 
 **2. Tanh - Ultra Fast (NO exp needed):**
-```python
+~~~
 @triton.jit
 def ultra_fast_tanh(x):
     # Padé [3/3] approximation - NO exp operations!
@@ -591,14 +591,14 @@ def ultra_fast_tanh(x):
     x_clamped = tl.where(x > 5.0, 5.0, tl.where(x < -5.0, -5.0, x))
     x2 = x_clamped * x_clamped
     return x_clamped * (27.0 + x2) / (27.0 + 9.0 * x2)
-```
+~~~
 
 ### **CRITICAL Performance Rules for >2x Speedup** ###
 
 1. **Memory Access Optimization (HIGHEST PRIORITY):**
    - ✅ ALWAYS process contiguous blocks: `offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)`
    - ✅ For split tensors like `x[:, :d]` and `x[:, d:]`, flatten to 1D:
-     ```python
+     ```
      # BEST PRACTICE for gelu(x[:, :d]) * x[:, d:]:
      N = batch_size * out_features
      flat_idx = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
@@ -613,7 +613,7 @@ def ultra_fast_tanh(x):
    - ❌ AVOID strided or scattered access patterns
 
 2. **Aggressive Autotuning (MANDATORY):**
-   ```python
+   ```
    @triton.autotune(
        configs=[
            triton.Config({'BLOCK_SIZE': 512}, num_warps=4, num_stages=3),

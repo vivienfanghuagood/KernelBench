@@ -176,7 +176,7 @@ async def get_sample_files():
         samples = []
         base_path = "KernelBench"
         
-        for level in ["level1", "level2", "level6"]:
+        for level in ["level1", "level2", "level3", "level6"]:
             level_path = os.path.join(base_path, level)
             if os.path.exists(level_path):
                 files = sorted([f for f in os.listdir(level_path) if f.endswith('.py')])

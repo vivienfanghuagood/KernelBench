@@ -50,6 +50,9 @@ class KernelBenchGradioApp:
             elif sample_selection.startswith("[level2]"):
                 level = "level2"
                 name = sample_selection[9:].strip()
+            elif sample_selection.startswith("[level3]"):
+                level = "level3"
+                name = sample_selection[9:].strip()
             elif sample_selection.startswith("[level6]"):
                 level = "level6"
                 name = sample_selection[9:].strip()
@@ -800,4 +803,4 @@ if __name__ == "__main__":
     # Set max_size to allow multiple concurrent requests (default is 1)
     # This should match or exceed the backend's MAX_WORKERS setting
     app.queue(max_size=20)  # Allow up to 20 requests in queue
-    app.launch(server_name="0.0.0.0", server_port=7861, share=True)
+    app.launch(server_name="0.0.0.0", server_port=7862, share=True)

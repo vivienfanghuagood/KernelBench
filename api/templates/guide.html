@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TritonAgent User Guide</title>
+    <style>
+        :root {
+            --bg-primary: #ffffff;
+            --bg-secondary: #f7f8fa;
+            --bg-tertiary: #eef1f6;
+            --text-primary: #1f2937;
+            --text-secondary: #4b5563;
+            --accent-blue: #2563eb;
+            --accent-blue-light: #3b82f6;
+            --accent-green: #059669;
+            --accent-orange: #d97706;
+            --accent-red: #dc2626;
+            --border-color: #e5e7eb;
+            --code-bg: #f3f4f6;
+        }
+        
+        * { box-sizing: border-box; }
+        
+        body {
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            margin: 0;
+            padding: 0;
+            line-height: 1.7;
+        }
+        
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 32px 24px;
+        }
+        
+        header {
+            background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%);
+            border-bottom: 1px solid var(--border-color);
+            padding: 24px 0;
+            margin-bottom: 28px;
+        }
+        
+        header .container { padding-top: 0; padding-bottom: 0; }
+        
+        h1 {
+            font-size: 1.75rem;
+            margin: 0 0 6px 0;
+            color: var(--accent-blue);
+        }
+        
+        .subtitle {
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+            margin: 0;
+        }
+        
+        h2 {
+            color: var(--accent-blue);
+            font-size: 1.4rem;
+            margin-top: 40px;
+            margin-bottom: 14px;
+            padding-bottom: 6px;
+            border-bottom: 2px solid var(--border-color);
+        }
+        
+        h3 {
+            color: var(--text-primary);
+            font-size: 1.1rem;
+            margin-top: 24px;
+            margin-bottom: 10px;
+        }
+        
+        p {
+            color: var(--text-secondary);
+            margin-bottom: 12px;
+        }
+        
+        a { color: var(--accent-blue); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        
+        ul, ol {
+            color: var(--text-secondary);
+            padding-left: 22px;
+            margin-bottom: 14px;
+        }
+        
+        li { margin-bottom: 5px; }
+        
+        code {
+            background: var(--code-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            padding: 1px 5px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.88em;
+            color: var(--accent-blue);
+        }
+        
+        pre {
+            background: var(--code-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 14px;
+            overflow-x: auto;
+            margin: 12px 0 18px 0;
+            font-size: 0.9em;
+        }
+        
+        pre code {
+            border: none;
+            padding: 0;
+            color: var(--text-primary);
+            background: none;
+        }
+        
+        .note {
+            background: rgba(37, 99, 235, 0.08);
+            border-left: 4px solid var(--accent-blue);
+            padding: 12px 14px;
+            margin: 14px 0;
+            border-radius: 0 6px 6px 0;
+        }
+        
+        .note p { margin: 0; color: var(--text-primary); }
+        
+        .tip {
+            background: rgba(5, 150, 105, 0.08);
+            border-left: 4px solid var(--accent-green);
+            padding: 12px 14px;
+            margin: 14px 0;
+            border-radius: 0 6px 6px 0;
+        }
+        
+        .tip p { margin: 0; color: var(--text-primary); }
+        
+        .warning {
+            background: rgba(217, 119, 6, 0.08);
+            border-left: 4px solid var(--accent-orange);
+            padding: 12px 14px;
+            margin: 14px 0;
+            border-radius: 0 6px 6px 0;
+        }
+        
+        .warning p { margin: 0; color: var(--text-primary); }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 14px 0;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            overflow: hidden;
+            font-size: 0.92em;
+        }
+        
+        th, td {
+            padding: 9px 11px;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        th {
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+        
+        td { color: var(--text-secondary); }
+        tr:last-child td { border-bottom: none; }
+        
+        .toc {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 18px;
+            margin-bottom: 28px;
+        }
+        
+        .toc h3 { margin-top: 0; font-size: 1rem; }
+        .toc ol { margin-bottom: 0; columns: 2; }
+        .toc a { color: var(--text-secondary); }
+        .toc a:hover { color: var(--accent-blue); }
+        
+        .badge {
+            display: inline-block;
+            padding: 2px 7px;
+            border-radius: 10px;
+            font-size: 0.78em;
+            font-weight: 500;
+        }
+        
+        .badge-green { background: rgba(5, 150, 105, 0.15); color: var(--accent-green); }
+        .badge-orange { background: rgba(217, 119, 6, 0.15); color: var(--accent-orange); }
+        .badge-gray { background: rgba(107, 114, 128, 0.15); color: #6b7280; }
+        .badge-new { background: rgba(37, 99, 235, 0.15); color: var(--accent-blue); font-weight: 600; }
+        
+        /* Collapsible details */
+        .sample-details {
+            margin: 16px 0;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            background: var(--bg-secondary);
+        }
+        
+        .sample-details summary {
+            padding: 12px 16px;
+            cursor: pointer;
+            user-select: none;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .sample-details summary:hover {
+            background: var(--bg-tertiary);
+        }
+        
+        .sample-details[open] summary {
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        .sample-details table {
+            margin: 0;
+            border: none;
+            border-radius: 0;
+        }
+        
+        .expand-hint {
+            font-size: 0.8em;
+            color: var(--text-secondary);
+            font-weight: normal;
+        }
+        
+        .sample-details[open] .expand-hint {
+            display: none;
+        }
+        
+        .highlight-row {
+            background: rgba(37, 99, 235, 0.06);
+        }
+        
+        .highlight-row td {
+            color: var(--text-primary);
+        }
+        
+        .section { margin-bottom: 36px; }
+        
+        footer {
+            border-top: 1px solid var(--border-color);
+            margin-top: 40px;
+            padding-top: 24px;
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 0.88em;
+        }
+        
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--accent-blue);
+            font-size: 0.88rem;
+            margin-bottom: 18px;
+        }
+        
+        .steps {
+            counter-reset: step;
+            list-style: none;
+            padding-left: 0;
+        }
+        
+        .steps li {
+            counter-increment: step;
+            padding-left: 36px;
+            position: relative;
+            margin-bottom: 12px;
+        }
+        
+        .steps li::before {
+            content: counter(step);
+            position: absolute;
+            left: 0;
+            width: 24px;
+            height: 24px;
+            background: var(--accent-blue);
+            color: white;
+            border-radius: 50%;
+            font-size: 0.8em;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        /* Flowchart styles */
+        .flowchart {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            margin: 20px 0;
+            padding: 20px 10px;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            overflow-x: auto;
+        }
+        
+        .flow-box {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-size: 0.85em;
+            font-weight: 500;
+            text-align: center;
+            min-width: 100px;
+            white-space: nowrap;
+        }
+        
+        .flow-input {
+            background: #dbeafe;
+            color: #1e40af;
+            border: 2px solid #93c5fd;
+        }
+        
+        .flow-process {
+            background: #fef3c7;
+            color: #92400e;
+            border: 2px solid #fcd34d;
+        }
+        
+        .flow-output {
+            background: #d1fae5;
+            color: #065f46;
+            border: 2px solid #6ee7b7;
+        }
+        
+        .flow-arrow {
+            color: var(--text-secondary);
+            font-size: 1.2em;
+            flex-shrink: 0;
+        }
+        
+        .flow-icon {
+            font-size: 1.3em;
+            margin-bottom: 4px;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>🚀 TritonAgent User Guide</h1>
+            <p class="subtitle">Generate optimized Triton GPU kernels from PyTorch code with Agent</p>
+        </div>
+    </header>
+    
+    <div class="container">
+        <a href="/" class="back-link">← Back to TritonAgent App</a>
+        
+        <nav class="toc">
+            <h3>📖 Contents</h3>
+            <ol>
+                <li><a href="#overview">What is TritonAgent?</a></li>
+                <li><a href="#quick-start">Quick Start</a></li>
+                <li><a href="#sample-format">Input Code Format</a></li>
+                <li><a href="#configuration">Configuration Options</a></li>
+                <li><a href="#history">Viewing Results</a></li>
+                <li><a href="#advanced">Advanced: Custom Prompts</a></li>
+            </ol>
+        </nav>
+
+        <!-- Section 1: Overview -->
+        <section id="overview" class="section">
+            <h2>1. What is TritonAgent?</h2>
+            <p>TritonAgent is an AI-powered tool designed specifically for <strong>AMD Instinct GPUs</strong>. It automatically converts your PyTorch code into optimized Triton GPU kernels, handling the complex work of writing high-performance GPU code for you.</p>
+            
+            <!-- Flowchart -->
+            <div class="flowchart">
+                <div class="flow-box flow-input">
+                    <span class="flow-icon">📝</span>
+                    PyTorch Code
+                </div>
+                <span class="flow-arrow">→</span>
+                <div class="flow-box flow-process">
+                    <span class="flow-icon">🤖</span>
+                    Code Generation
+                </div>
+                <span class="flow-arrow">→</span>
+                <div class="flow-box flow-process">
+                    <span class="flow-icon">⚙️</span>
+                    Compile & Test
+                </div>
+                <span class="flow-arrow">→</span>
+                <div class="flow-box flow-process">
+                    <span class="flow-icon">📊</span>
+                    Benchmark
+                </div>
+                <span class="flow-arrow">→</span>
+                <div class="flow-box flow-output">
+                    <span class="flow-icon">🚀</span>
+                    Optimized Kernel
+                </div>
+            </div>
+            
+            <p><strong>The system automatically:</strong></p>
+            <ul>
+                <li>Generates Triton kernel code from your PyTorch model</li>
+                <li>Validates correctness against the original implementation</li>
+                <li>Measures speedup on AMD GPUs</li>
+                <li>Retries with error feedback if compilation or tests fail</li>
+            </ul>
+        </section>
+
+        <!-- Section 2: Quick Start -->
+        <section id="quick-start" class="section">
+            <h2>2. Quick Start</h2>
+            <p>Follow these steps to generate your first optimized kernel:</p>
+            
+            <ol class="steps">
+                <li><strong>Load or paste code</strong> — Select a sample from the dropdown, or paste your own PyTorch code into the text area.</li>
+                <li><strong>Choose settings</strong> — Select the AI model provider (e.g., Anthropic, OpenAI) and backend (Triton recommended).</li>
+                <li><strong>Click "Generate Kernel"</strong> — The system will generate and evaluate the optimized code.</li>
+                <li><strong>View results</strong> — See the generated kernel, compilation status, correctness, and speedup.</li>
+            </ol>
+            
+            <div class="tip">
+                <p><strong>💡 First time?</strong> Try loading a sample from the dropdown to see the expected code format, then click Generate to see TritonAgent in action.</p>
+            </div>
+            
+            <details class="sample-details">
+                <summary><strong>📂 Sample Categories</strong> <span class="expand-hint">(click to expand)</span></summary>
+                <table>
+                    <tr><th>Level</th><th>Description</th></tr>
+                    <tr><td>level1</td><td>Basic operations — matrix multiplication, activations (ReLU, GELU, Softmax), norms</td></tr>
+                    <tr><td>level2</td><td>Simple fused operations — combining 2-3 basic ops</td></tr>
+                    <tr><td>level3</td><td>More complex fusions — multi-step computations</td></tr>
+                    <tr><td>level4</td><td>Transformer models — full attention and MLP blocks</td></tr>
+                    <tr class="highlight-row"><td><span class="badge badge-new">level6</span></td><td>Real-world operators from <strong>SGLang</strong> — production inference ops</td></tr>
+                    <tr class="highlight-row"><td><span class="badge badge-new">level7</span></td><td>Samples with existing <strong>Triton forward</strong> — optimize existing kernels</td></tr>
+                </table>
+            </details>
+        </section>
+
+        <!-- Section 3: Input Code Format -->
+        <section id="sample-format" class="section">
+            <h2>3. Input Code Format</h2>
+            <p>Your input code needs three parts for the system to work:</p>
+            
+            <h3>① Model Class</h3>
+            <p>A PyTorch module named <code>Model</code> with your implementation.</p>
+            <pre><code>class Model(nn.Module):
+    def __init__(self, out_features):
+        super(Model, self).__init__()
+        self.out_features = out_features
+
+    def forward(self, x):
+        return F.gelu(x[:, :self.out_features]) * x[:, self.out_features:]</code></pre>
+
+            <h3>② get_inputs() Function</h3>
+            <p>Returns a list of input tensors for testing.</p>
+            <pre><code>def get_inputs():
+    return [torch.rand(batch_size, features, dtype=torch.float16, device='cuda')]</code></pre>
+
+            <h3>③ get_init_inputs() Function</h3>
+            <p>Returns arguments for creating the Model.</p>
+            <pre><code>def get_init_inputs():
+    return [out_features]</code></pre>
+
+            <div class="note">
+                <p><strong>Two input types supported:</strong><br>
+                • <strong>Pure PyTorch</strong> — Standard PyTorch ops (level1-6)<br>
+                • <strong>PyTorch + Triton</strong> — Already has Triton kernels to optimize (level7)</p>
+            </div>
+        </section>
+
+        <!-- Section 4: Configuration Options -->
+        <section id="configuration" class="section">
+            <h2>4. Configuration Options</h2>
+            
+            <h3>AI Model Providers</h3>
+            <table>
+                <tr><th>Provider</th><th>Default Model</th><th>Status</th></tr>
+                <tr><td>Anthropic</td><td><code>claude-sonnet-4.5</code></td><td><span class="badge badge-green">Available</span></td></tr>
+                <tr><td>OpenAI</td><td><code>gpt-5</code></td><td><span class="badge badge-green">Available</span></td></tr>
+                <tr><td>NIM</td><td><code>qwen/qwen3-coder-480b-a35b-instruct</code></td><td><span class="badge badge-green">Available</span></td></tr>
+                <tr><td>DeepSeek</td><td><code>deepseek-coder</code></td><td><span class="badge badge-gray">Coming Soon</span></td></tr>
+                <tr><td>Google</td><td><code>gemini-1.5-flash-002</code></td><td><span class="badge badge-gray">Coming Soon</span></td></tr>
+            </table>
+            <p>See <a href="https://llm.amd.com" target="_blank">llm.amd.com</a> for more model options.</p>
+
+            <h3>Other Settings</h3>
+            <table>
+                <tr><th>Setting</th><th>Default</th><th>Description</th></tr>
+                <tr><td>Backend</td><td>Triton</td><td>Kernel language (Triton, CUDA, CuTe)</td></tr>
+                <tr><td>GPU Architecture</td><td>CDNA</td><td>AMD Instinct GPUs (RDNA coming soon)</td></tr>
+                <tr><td>Max Retries</td><td>3</td><td>Auto-retry attempts on failure</td></tr>
+                <tr><td>Target Speedup</td><td>1.0</td><td>Stop early if this speedup is achieved</td></tr>
+            </table>
+        </section>
+
+        <!-- Section 5: Viewing Results -->
+        <section id="history" class="section">
+            <h2>5. Viewing Results</h2>
+            <p>After generation completes, you'll see the results immediately. You can also view past requests in the <strong>Request History</strong> tab.</p>
+            
+            <h3>Understanding the Results</h3>
+            <table>
+                <tr><th>Field</th><th>Meaning</th></tr>
+                <tr><td>Compiled ✅/❌</td><td>Did the code compile without errors?</td></tr>
+                <tr><td>Correct ✅/❌</td><td>Does the output match the original PyTorch?</td></tr>
+                <tr><td>Runtime</td><td>Execution time in milliseconds</td></tr>
+                <tr><td>Speedup</td><td>How much faster than PyTorch (e.g., 2.5x = 2.5 times faster)</td></tr>
+            </table>
+            
+            <h3>Request History Tab</h3>
+            <p>Click any row in the history table to view its details:</p>
+            <ul>
+                <li><strong>Reference Code</strong> — Your original input</li>
+                <li><strong>Generated Kernel</strong> — The Triton code (copy this for your project!)</li>
+                <li><strong>Evaluation Results</strong> — Detailed performance metrics</li>
+                <li><strong>Error Message</strong> — Debug info if something failed</li>
+            </ul>
+        </section>
+
+        <!-- Section 6: Advanced - Custom Prompts & Troubleshooting -->
+        <section id="advanced" class="section">
+            <h2>6. Advanced: Custom Prompts</h2>
+            <p>Custom prompts let you guide the AI with specific instructions. Use them when you need more control over the generated code.</p>
+            
+            <h3>Built-in Templates</h3>
+            <table>
+                <tr><th>Template</th><th>When to Use</th></tr>
+                <tr><td><strong>QUANT_OP_PROMPT</strong></td><td>FP8/quantized ops, AMD hardware optimization</td></tr>
+                <tr><td><strong>HIGH_CORRECT_PROMPT</strong></td><td>Prioritize correctness over speed</td></tr>
+                <tr><td><strong>HIGH_PERF_PROMPT</strong></td><td>Maximize speedup (&gt;2x target)</td></tr>
+            </table>
+            
+            <p>Select a template from the dropdown, then modify it as needed. You can also write your own prompts from scratch.</p>
+            
+            <h3>Troubleshooting Failed Generations</h3>
+            <p>If generation fails or produces incorrect results:</p>
+            <ol>
+                <li>Check the <strong>Error Message</strong> tab to understand what went wrong</li>
+                <li>Load <strong>HIGH_CORRECT_PROMPT</strong> template for correctness issues</li>
+                <li>Increase <strong>Max Retries</strong> to 5-10 for complex problems</li>
+                <li>Re-run the generation</li>
+            </ol>
+            
+            <div class="warning">
+                <p><strong>Common fixes to add to your prompt:</strong><br>
+                • "Add @triton.jit decorator to all kernel functions"<br>
+                • "Use .to(dtype) instead of tl.astype()"<br>
+                • "Cast to fp32 for exp/log/sqrt operations"<br>
+                • "Keep BLOCK_SIZE under 64KB for AMD GPUs"</p>
+            </div>
+        </section>
+
+        <footer>
+            <p>TritonAgent — Powered by AMD | <a href="https://llm.amd.com" target="_blank">llm.amd.com</a></p>
+        </footer>
+    </div>
+</body>
+</html>

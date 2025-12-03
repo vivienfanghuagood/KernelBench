@@ -11,7 +11,7 @@ import atexit
 from api.service import kernel_service
 from api.database import GenerationStatus
 
-app = FastAPI(title="KernelBench API", description="API for generating and evaluating GPU kernels", version="1.0.0")
+app = FastAPI(title="TritonAgent API", description="API for generating and evaluating GPU kernels", version="1.0.0")
 
 # Register cleanup on shutdown
 atexit.register(kernel_service.cleanup_all_processes)
@@ -80,6 +80,24 @@ async def read_root():
                 <h1>KernelBench API</h1>
                 <p>Frontend template not found. Please check the templates directory.</p>
                 <p><a href="/docs">View API documentation</a></p>
+            </body>
+        </html>
+        """)
+
+@app.get("/guide", response_class=HTMLResponse)
+async def read_guide():
+    """Serve the user guide page"""
+    try:
+        with open("api/templates/guide.html", "r") as f:
+            return HTMLResponse(content=f.read())
+    except FileNotFoundError:
+        return HTMLResponse(content="""
+        <html>
+            <head><title>KernelBench User Guide</title></head>
+            <body>
+                <h1>User Guide Not Found</h1>
+                <p>The user guide file is missing. Please check the templates directory.</p>
+                <p><a href="/">Back to Home</a></p>
             </body>
         </html>
         """)
@@ -171,12 +189,21 @@ async def get_all_requests(limit: int = 100):
 
 @app.get("/api/samples")
 async def get_sample_files():
-    """Get list of sample files from KernelBench/level1 and level2"""
+    """Get list of sample files from all KernelBench/level* directories"""
     try:
         samples = []
         base_path = "KernelBench"
         
-        for level in ["level1", "level2", "level3", "level6"]:
+        # Dynamically find all level directories
+        if os.path.exists(base_path):
+            level_dirs = sorted([
+                d for d in os.listdir(base_path) 
+                if d.startswith("level") and os.path.isdir(os.path.join(base_path, d))
+            ])
+        else:
+            level_dirs = []
+        
+        for level in level_dirs:
             level_path = os.path.join(base_path, level)
             if os.path.exists(level_path):
                 files = sorted([f for f in os.listdir(level_path) if f.endswith('.py')])

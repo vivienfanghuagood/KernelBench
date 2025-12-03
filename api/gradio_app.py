@@ -2,7 +2,12 @@ import gradio as gr
 import requests
 import time
 import os
+import re
 from typing import Optional, Dict, Any, List, Tuple
+
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+import uvicorn
 
 class KernelBenchGradioApp:
     def __init__(self, api_base_url: str = "http://localhost:8009"):
@@ -44,20 +49,13 @@ class KernelBenchGradioApp:
             return ("", "")
         
         try:
-            if sample_selection.startswith("[level1]"):
-                level = "level1"
-                name = sample_selection[9:].strip()
-            elif sample_selection.startswith("[level2]"):
-                level = "level2"
-                name = sample_selection[9:].strip()
-            elif sample_selection.startswith("[level3]"):
-                level = "level3"
-                name = sample_selection[9:].strip()
-            elif sample_selection.startswith("[level6]"):
-                level = "level6"
-                name = sample_selection[9:].strip()
-            else:
+            # Dynamically parse level from "[levelX] name" format
+            match = re.match(r'\[(level\d+)\]\s*(.+)', sample_selection)
+            if not match:
                 return ("", "")
+            
+            level = match.group(1)
+            name = match.group(2).strip()
             
             filename = name + ".py"
             response = requests.get(f"{self.api_base_url}/api/samples/{level}/{filename}")
@@ -548,11 +546,13 @@ class KernelBenchGradioApp:
             return ("", "", "", "", f"❌ Error: {str(e)}")
     
     def create_interface(self) -> gr.Blocks:
-        with gr.Blocks(title="KernelBench - GPU Kernel Generator", theme=gr.themes.Base()) as app:
+        with gr.Blocks(title="TritonAgent - GPU Kernel Generator", theme=gr.themes.Base()) as app:
             gr.Markdown(
                 """
-                # 🚀 KernelBench GPU Kernel Generator
+                # 🚀 TritonAgent GPU Kernel Generator
                 **Powered by AMD** - Generate and evaluate optimized GPU kernels
+                
+                📖 **[User Guide](/guide)** - Learn how to use TritonAgent effectively
                 """
             )
             
@@ -796,11 +796,32 @@ def create_gradio_app(api_base_url: str = "http://localhost:8009") -> gr.Blocks:
     return app_instance.create_interface()
 
 
-if __name__ == "__main__":
+def serve_guide_html() -> str:
+    """Read and return the guide HTML content."""
+    guide_path = os.path.join(os.path.dirname(__file__), "templates", "guide.html")
+    try:
+        with open(guide_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return "<html><body><h1>Guide not found</h1><p>The user guide file is missing.</p></body></html>"
+
+
+def create_app() -> FastAPI:
+    """Create the combined FastAPI + Gradio application."""
     api_url = os.environ.get("API_BASE_URL", "http://localhost:8009")
-    app = create_gradio_app(api_base_url=api_url)
-    # Enable queue to handle long-running kernel generation tasks
-    # Set max_size to allow multiple concurrent requests (default is 1)
-    # This should match or exceed the backend's MAX_WORKERS setting
-    app.queue(max_size=20)  # Allow up to 20 requests in queue
-    app.launch(server_name="0.0.0.0", server_port=7862, share=True)
+    gradio_app = create_gradio_app(api_base_url=api_url)
+    gradio_app.queue(max_size=20)
+    
+    fastapi_app = FastAPI(title="TritonAgent")
+    
+    @fastapi_app.get("/guide", response_class=HTMLResponse)
+    async def get_guide():
+        """Serve the user guide page."""
+        return HTMLResponse(content=serve_guide_html())
+    
+    return gr.mount_gradio_app(fastapi_app, gradio_app, path="/")
+
+
+if __name__ == "__main__":
+    app = create_app()
+    uvicorn.run(app, host="0.0.0.0", port=7862)

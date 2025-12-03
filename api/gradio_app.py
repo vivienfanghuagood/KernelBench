@@ -43,6 +43,47 @@ class KernelBenchGradioApp:
             print(f"Error loading prompt templates: {e}")
             return {}
     
+    def get_prompt_template_choices(self) -> Tuple[List[str], Dict[str, str], str, str]:
+        """Get formatted dropdown choices for prompt templates.
+        
+        Returns:
+            Tuple of (choices list, display_to_key mapping, default value, default content)
+        """
+        templates = self.load_prompt_templates()
+        display_to_key = {}
+        default_value = "-- Select template to load --"
+        default_content = ""
+        
+        # Define the desired order
+        ordered_keys = ["HIGH_CORRECT_PROMPT", "HIGH_PERF_PROMPT", "QUANT_OP_PROMPT"]
+        
+        choices = ["-- Select template to load --"]
+        for key in ordered_keys:
+            if key in templates:
+                template = templates[key]
+                name = template.get("name", key)
+                description = template.get("description", "")
+                # Format: "Name - Description" for better readability
+                display_label = f"{name} - {description}" if description else name
+                choices.append(display_label)
+                display_to_key[display_label] = key
+                
+                # Set HIGH_CORRECT_PROMPT as default
+                if key == "HIGH_CORRECT_PROMPT":
+                    default_value = display_label
+                    default_content = template.get("content", "")
+        
+        # Add any remaining templates not in the ordered list
+        for key, template in templates.items():
+            if key not in ordered_keys:
+                name = template.get("name", key)
+                description = template.get("description", "")
+                display_label = f"{name} - {description}" if description else name
+                choices.append(display_label)
+                display_to_key[display_label] = key
+        
+        return choices, display_to_key, default_value, default_content
+    
     def load_sample_content(self, sample_selection: str) -> Tuple[str, str]:
         """Load sample content and return both content and problem name"""
         if sample_selection == "-- Select a sample to load --":
@@ -78,10 +119,20 @@ class KernelBenchGradioApp:
         }
         return model_map.get(server_type, "gpt-5")
     
-    def get_prompt_template_content(self, template_key: str) -> str:
-        """Get the content of a selected prompt template"""
-        if template_key == "-- Select template to load --":
+    def get_prompt_template_content(self, display_label: str, display_to_key: Dict[str, str]) -> str:
+        """Get the content of a selected prompt template.
+        
+        Args:
+            display_label: The display label shown in dropdown
+            display_to_key: Mapping from display labels to template keys
+        """
+        if display_label == "-- Select template to load --":
             return gr.update()  # No change
+        
+        # Get the actual template key from display label
+        template_key = display_to_key.get(display_label)
+        if not template_key:
+            return gr.update()
         
         templates = self.load_prompt_templates()
         if template_key in templates:
@@ -576,25 +627,25 @@ class KernelBenchGradioApp:
                                 max_lines=20
                             )
                             
-                            # Custom Prompt with Template Loader
-                            with gr.Row():
-                                prompt_templates = self.load_prompt_templates()
-                                template_choices = ["-- Select template to load --"] + list(prompt_templates.keys())
+                            # Advanced Settings - Custom Prompt with Template Loader
+                            with gr.Accordion("Advanced Settings", open=False):
+                                template_choices, display_to_key_map, default_template, default_content = self.get_prompt_template_choices()
+                                display_to_key_state = gr.State(display_to_key_map)
                                 
                                 prompt_template_btn = gr.Dropdown(
                                     choices=template_choices,
-                                    value="-- Select template to load --",
+                                    value=default_template,
                                     label="Load Prompt Template",
-                                    info="Select a template to load into custom prompt (you can edit after loading)",
-                                    scale=3
+                                    info="Select a template to load into custom prompt (you can edit after loading)"
                                 )
                                 
-                            custom_prompt_input = gr.Textbox(
-                                label="Custom Prompt (Optional)",
-                                placeholder="Add custom instructions or load a template above...",
-                                lines=5,
-                                max_lines=10
-                            )
+                                custom_prompt_input = gr.Textbox(
+                                    label="Custom Prompt (Optional)",
+                                    placeholder="Add custom instructions or load a template above...",
+                                    value=default_content,
+                                    lines=5,
+                                    max_lines=10
+                                )
                             
                             problem_name_state = gr.State("")
                             
@@ -684,7 +735,7 @@ class KernelBenchGradioApp:
                     
                     prompt_template_btn.change(
                         fn=self.get_prompt_template_content,
-                        inputs=[prompt_template_btn],
+                        inputs=[prompt_template_btn, display_to_key_state],
                         outputs=[custom_prompt_input]
                     )
                     

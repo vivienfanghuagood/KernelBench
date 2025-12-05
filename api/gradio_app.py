@@ -55,7 +55,7 @@ class KernelBenchGradioApp:
         default_content = ""
         
         # Define the desired order
-        ordered_keys = ["RDNA4_PROMPT", "HIGH_CORRECT_PROMPT", "HIGH_PERF_PROMPT", "QUANT_OP_PROMPT"]
+        ordered_keys = ["HIGH_CORRECT_PROMPT", "HIGH_PERF_PROMPT", "QUANT_OP_PROMPT", "RDNA4_PROMPT"]
         
         choices = ["-- Select template to load --"]
         for key in ordered_keys:
@@ -68,8 +68,8 @@ class KernelBenchGradioApp:
                 choices.append(display_label)
                 display_to_key[display_label] = key
                 
-                # Set RDNA4_PROMPT as default for RDNA4 deployments
-                if key == "RDNA4_PROMPT":
+                # Set HIGH_CORRECT_PROMPT as default
+                if key == "HIGH_CORRECT_PROMPT":
                     default_value = display_label
                     default_content = template.get("content", "")
         

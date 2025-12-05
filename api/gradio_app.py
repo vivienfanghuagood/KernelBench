@@ -119,6 +119,37 @@ class KernelBenchGradioApp:
         }
         return model_map.get(server_type, "gpt-5")
     
+    def update_prompt_for_arch(self, gpu_arch: str, display_to_key: Dict[str, str]) -> Tuple[str, str]:
+        """Update prompt template based on GPU architecture selection.
+        
+        When RDNA is selected, automatically switch to RDNA4_PROMPT.
+        User can still manually change it afterwards.
+        
+        Args:
+            gpu_arch: Selected GPU architecture ("CDNA" or "RDNA")
+            display_to_key: Mapping from display labels to template keys
+        
+        Returns:
+            Tuple of (dropdown value, prompt content)
+        """
+        if gpu_arch == "RDNA":
+            # Find the RDNA4_PROMPT display label
+            for display_label, key in display_to_key.items():
+                if key == "RDNA4_PROMPT":
+                    templates = self.load_prompt_templates()
+                    content = templates.get("RDNA4_PROMPT", {}).get("content", "")
+                    return (display_label, content)
+        elif gpu_arch == "CDNA":
+            # Switch back to HIGH_CORRECT_PROMPT for CDNA
+            for display_label, key in display_to_key.items():
+                if key == "HIGH_CORRECT_PROMPT":
+                    templates = self.load_prompt_templates()
+                    content = templates.get("HIGH_CORRECT_PROMPT", {}).get("content", "")
+                    return (display_label, content)
+        
+        # No change if not found
+        return (gr.update(), gr.update())
+    
     def get_prompt_template_content(self, display_label: str, display_to_key: Dict[str, str]) -> str:
         """Get the content of a selected prompt template.
         
@@ -743,6 +774,12 @@ class KernelBenchGradioApp:
                         fn=self.update_model_name,
                         inputs=[server_type],
                         outputs=[model_name]
+                    )
+                    
+                    gpu_arch.change(
+                        fn=self.update_prompt_for_arch,
+                        inputs=[gpu_arch, display_to_key_state],
+                        outputs=[prompt_template_btn, custom_prompt_input]
                     )
                     
                     generate_btn.click(

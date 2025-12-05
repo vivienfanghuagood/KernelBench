@@ -288,7 +288,7 @@ async def get_workers_info():
 async def get_prompt_templates():
     """Get available prompt templates from prompts.py"""
     try:
-        from api.prompts import QUANT_OP_PROMPT, HIGH_CORRECT_PROMPT, HIGH_PERF_PROMPT
+        from api.prompts import QUANT_OP_PROMPT, HIGH_CORRECT_PROMPT, HIGH_PERF_PROMPT, RDNA4_PROMPT
         
         prompts = {
             "QUANT_OP_PROMPT": {
@@ -305,6 +305,11 @@ async def get_prompt_templates():
                 "name": "High Performance Prompt",
                 "description": "Aggressive optimization targeting >2x speedup with fast approximations",
                 "content": HIGH_PERF_PROMPT
+            },
+            "RDNA4_PROMPT": {
+                "name": "RDNA4 Correctness Prompt",
+                "description": "Optimized for AMD RDNA4 GPUs (RX 9000 series) with Wave32 architecture and correctness focus",
+                "content": RDNA4_PROMPT
             }
         }
         

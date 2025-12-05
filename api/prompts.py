@@ -688,3 +688,306 @@ Before submitting ModelNew, verify:
 Default to the FASTEST implementations (sigmoid GELU, Padé tanh, large BLOCK_SIZE, aggressive autotuning).
 Focus on memory bandwidth optimization and kernel fusion.
 """
+
+RDNA4_PROMPT = """
+## AMD RDNA4 Triton Kernel Generation Guide
+
+### CRITICAL: RDNA4 Architecture Differences from CDNA
+
+**RDNA4 uses Wave32 (32 threads per wavefront) NOT Wave64 like CDNA (MI300x/MI355).**
+
+| Feature | RDNA4 | CDNA (MI300x) |
+|---------|-------|---------------|
+| Wavefront Size | **Wave32 (32 threads)** | Wave64 (64 threads) |
+| Matrix Cores | No native FP8 MFMA | Full MFMA support |
+| Optimal num_warps | 2-8 | 4-16 |
+| Optimal BLOCK_SIZE | 256-1024 | 128-2048 |
+
+---
+
+## 1. MANDATORY CORRECTNESS RULES (CRITICAL)
+
+### 1.1 ALWAYS Use FP32 for Math Operations
+
+**This is the #1 cause of correctness failures. ALL math operations (exp, log, tanh, sqrt, division) MUST use FP32 intermediate values.**
+
+```python
+# ❌ WRONG - Will produce incorrect results
+@triton.jit
+def bad_kernel(x_ptr, out_ptr, N, BLOCK_SIZE: tl.constexpr):
+    idx = tl.program_id(0) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = idx < N
+    x = tl.load(x_ptr + idx, mask=mask)
+    # Direct FP16 math - INCORRECT
+    result = x * 0.5 * (1.0 + tl.libdevice.tanh(0.7978845608 * x))
+    tl.store(out_ptr + idx, result, mask=mask)
+
+# ✅ CORRECT - Cast to FP32, compute, cast back
+@triton.jit
+def correct_kernel(x_ptr, out_ptr, N, BLOCK_SIZE: tl.constexpr):
+    idx = tl.program_id(0) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = idx < N
+    x = tl.load(x_ptr + idx, mask=mask, other=0.0)
+    
+    # CRITICAL: Cast to FP32
+    x_fp32 = x.to(tl.float32)
+    
+    # All math in FP32
+    inner = 0.7978845608 * x_fp32
+    tanh_val = tl.libdevice.tanh(inner)
+    result_fp32 = x_fp32 * 0.5 * (1.0 + tanh_val)
+    
+    # Cast back to original dtype
+    result = result_fp32.to(x.dtype)
+    tl.store(out_ptr + idx, result, mask=mask)
+```
+
+### 1.2 Required @triton.jit Decorator
+
+ALL functions using Triton operations MUST have @triton.jit:
+
+```python
+# ❌ WRONG
+def helper(x):
+    return tl.exp(x)  # Missing decorator!
+
+# ✅ CORRECT
+@triton.jit
+def helper(x):
+    return tl.exp(x)
+```
+
+### 1.3 Forbidden APIs - DO NOT USE
+
+| Forbidden API | Use Instead |
+|---------------|-------------|
+| `tl.math.tanh` | `tl.libdevice.tanh` (with FP32 input) |
+| `tl.tanh` | `tl.libdevice.tanh` (with FP32 input) |
+| `tl.astype()` | `.to(dtype)` |
+| `tl.floor_div` | `x // y` |
+| `tl.full_like(x, v)` | `tl.zeros_like(x) + v` |
+| `tl.sum(x, where=...)` | `tl.sum(tl.where(mask, x, 0.0))` |
+| `tl.program_id(axis=3)` | Only 0, 1, 2 supported |
+
+### 1.4 Correct tl.load/tl.store Usage
+
+```python
+# ❌ WRONG - Integer default causes type error
+x = tl.load(ptr + idx, mask=mask, other=0)  # other=0 is int32!
+
+# ✅ CORRECT - Float default
+x = tl.load(ptr + idx, mask=mask, other=0.0)  # other=0.0 is float
+```
+
+### 1.5 No break/continue Statements
+
+```python
+# ❌ WRONG
+for i in range(N):
+    if condition:
+        continue  # NOT ALLOWED
+
+# ✅ CORRECT - Use tl.where
+for i in range(N):
+    result = tl.where(condition, skip_value, compute_value)
+```
+
+---
+
+## 2. RDNA4-Optimized Autotuning
+
+### 2.1 Elementwise Operations (GELU, ReLU, Sigmoid, Tanh, etc.)
+
+```python
+@triton.autotune(
+    configs=[
+        triton.Config({'BLOCK_SIZE': 256}, num_warps=4, num_stages=2),
+        triton.Config({'BLOCK_SIZE': 512}, num_warps=4, num_stages=2),
+        triton.Config({'BLOCK_SIZE': 512}, num_warps=8, num_stages=2),
+        triton.Config({'BLOCK_SIZE': 1024}, num_warps=8, num_stages=2),
+    ],
+    key=['N'],
+)
+@triton.jit
+def elementwise_kernel(..., BLOCK_SIZE: tl.constexpr):
+    ...
+```
+
+### 2.2 Reduction Operations (Sum, Mean, Softmax, LayerNorm)
+
+```python
+@triton.autotune(
+    configs=[
+        triton.Config({'BLOCK_SIZE': 256}, num_warps=4, num_stages=2),
+        triton.Config({'BLOCK_SIZE': 512}, num_warps=4, num_stages=2),
+        triton.Config({'BLOCK_SIZE': 1024}, num_warps=8, num_stages=2),
+    ],
+    key=['N'],
+)
+@triton.jit
+def reduction_kernel(..., BLOCK_SIZE: tl.constexpr):
+    ...
+```
+
+### 2.3 Matrix Operations (NO MFMA on RDNA4)
+
+**RDNA4 does NOT have matrix cores. Use smaller tiles than CDNA:**
+
+```python
+@triton.autotune(
+    configs=[
+        triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64, 'BLOCK_K': 32, 'GROUP_M': 8}, 
+                      num_stages=2, num_warps=4),
+        triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64, 'BLOCK_K': 64, 'GROUP_M': 8}, 
+                      num_stages=2, num_warps=4),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 64, 'BLOCK_K': 32, 'GROUP_M': 8}, 
+                      num_stages=2, num_warps=4),
+        triton.Config({'BLOCK_M': 128, 'BLOCK_N': 128, 'BLOCK_K': 32, 'GROUP_M': 8}, 
+                      num_stages=2, num_warps=8),
+    ],
+    key=['M', 'N', 'K'],
+)
+@triton.jit
+def matmul_kernel(...):
+    # CRITICAL: Accumulate in FP32
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+    ...
+```
+
+### 2.4 Parameter Guidelines for RDNA4
+
+| Parameter | Recommended | Notes |
+|-----------|-------------|-------|
+| BLOCK_SIZE (1D) | 256-1024 | Start with 512 |
+| BLOCK_M/N (2D) | 64-128 | No 256+ without matrix cores |
+| BLOCK_K | 32-64 | Smaller than CDNA |
+| num_warps | 2-8 | Due to Wave32 |
+| num_stages | 2-3 | Conservative |
+
+---
+
+## 3. Correct Implementation Examples
+
+### 3.1 GELU Activation
+
+```python
+@triton.jit
+def gelu_kernel(x_ptr, out_ptr, N, BLOCK_SIZE: tl.constexpr):
+    pid = tl.program_id(0)
+    offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = offs < N
+    
+    x = tl.load(x_ptr + offs, mask=mask, other=0.0)
+    
+    # CRITICAL: FP32 for all math
+    x_fp32 = x.to(tl.float32)
+    x3 = x_fp32 * x_fp32 * x_fp32
+    inner = 0.7978845608 * (x_fp32 + 0.044715 * x3)
+    tanh_val = tl.libdevice.tanh(inner)
+    result = x_fp32 * 0.5 * (1.0 + tanh_val)
+    
+    tl.store(out_ptr + offs, result.to(x.dtype), mask=mask)
+```
+
+### 3.2 Softmax with Numerical Stability
+
+```python
+@triton.jit
+def softmax_kernel(x_ptr, out_ptr, n_cols, stride, BLOCK_SIZE: tl.constexpr):
+    row_idx = tl.program_id(0)
+    row_start = row_idx * stride
+    col_offs = tl.arange(0, BLOCK_SIZE)
+    
+    # Find max for numerical stability (in FP32)
+    max_val = float('-inf')
+    for start in range(0, n_cols, BLOCK_SIZE):
+        offs = start + col_offs
+        mask = offs < n_cols
+        x = tl.load(x_ptr + row_start + offs, mask=mask, other=float('-inf'))
+        x_fp32 = x.to(tl.float32)
+        max_val = tl.maximum(max_val, tl.max(x_fp32, axis=0))
+    
+    # Compute exp(x - max) and sum (in FP32)
+    sum_exp = 0.0
+    for start in range(0, n_cols, BLOCK_SIZE):
+        offs = start + col_offs
+        mask = offs < n_cols
+        x = tl.load(x_ptr + row_start + offs, mask=mask, other=float('-inf'))
+        x_fp32 = x.to(tl.float32)
+        exp_x = tl.exp(x_fp32 - max_val)
+        sum_exp += tl.sum(tl.where(mask, exp_x, 0.0), axis=0)
+    
+    # Compute and store softmax
+    for start in range(0, n_cols, BLOCK_SIZE):
+        offs = start + col_offs
+        mask = offs < n_cols
+        x = tl.load(x_ptr + row_start + offs, mask=mask, other=float('-inf'))
+        x_fp32 = x.to(tl.float32)
+        exp_x = tl.exp(x_fp32 - max_val)
+        result = (exp_x / sum_exp).to(x.dtype)
+        tl.store(out_ptr + row_start + offs, result, mask=mask)
+```
+
+### 3.3 LayerNorm / RMSNorm
+
+```python
+@triton.jit
+def layernorm_kernel(x_ptr, out_ptr, gamma_ptr, beta_ptr, M, N, eps, stride, BLOCK_SIZE: tl.constexpr):
+    row_idx = tl.program_id(0)
+    row_start = row_idx * stride
+    col_offs = tl.arange(0, BLOCK_SIZE)
+    
+    # Compute mean in FP32
+    mean = 0.0
+    for start in range(0, N, BLOCK_SIZE):
+        offs = start + col_offs
+        mask = offs < N
+        x = tl.load(x_ptr + row_start + offs, mask=mask, other=0.0)
+        x_fp32 = x.to(tl.float32)
+        mean += tl.sum(tl.where(mask, x_fp32, 0.0), axis=0)
+    mean = mean / N
+    
+    # Compute variance in FP32
+    var = 0.0
+    for start in range(0, N, BLOCK_SIZE):
+        offs = start + col_offs
+        mask = offs < N
+        x = tl.load(x_ptr + row_start + offs, mask=mask, other=0.0)
+        x_fp32 = x.to(tl.float32)
+        diff = tl.where(mask, x_fp32 - mean, 0.0)
+        var += tl.sum(diff * diff, axis=0)
+    var = var / N
+    rstd = tl.rsqrt(var + eps)
+    
+    # Normalize and store
+    for start in range(0, N, BLOCK_SIZE):
+        offs = start + col_offs
+        mask = offs < N
+        x = tl.load(x_ptr + row_start + offs, mask=mask, other=0.0)
+        x_fp32 = x.to(tl.float32)
+        gamma = tl.load(gamma_ptr + offs, mask=mask, other=1.0).to(tl.float32)
+        beta = tl.load(beta_ptr + offs, mask=mask, other=0.0).to(tl.float32)
+        out = ((x_fp32 - mean) * rstd) * gamma + beta
+        tl.store(out_ptr + row_start + offs, out.to(x.dtype), mask=mask)
+```
+
+---
+
+## 4. Verification Checklist
+
+Before generating kernel, verify:
+- [ ] ALL @triton.jit decorators present
+- [ ] ALL math operations use FP32 intermediate values
+- [ ] Use `tl.libdevice.tanh` NOT `tl.math.tanh`
+- [ ] Use `.to(dtype)` NOT `.astype()`
+- [ ] Use `other=0.0` (float) in tl.load, NOT `other=0` (int)
+- [ ] NO `break` or `continue` statements
+- [ ] num_warps is 2-8 (Wave32 architecture)
+- [ ] num_stages is 2-3 (conservative for AMD)
+- [ ] BLOCK_SIZE is 256-1024 for elementwise
+- [ ] BLOCK_M/N is 64-128 for matmul (no matrix cores)
+
+### Priority: CORRECTNESS > PERFORMANCE
+
+On RDNA4, always prioritize generating correct code. Use FP32 intermediate precision everywhere. Start with conservative block sizes and autotuning configs.
+"""

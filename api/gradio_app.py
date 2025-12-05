@@ -55,7 +55,7 @@ class KernelBenchGradioApp:
         default_content = ""
         
         # Define the desired order
-        ordered_keys = ["HIGH_CORRECT_PROMPT", "HIGH_PERF_PROMPT", "QUANT_OP_PROMPT"]
+        ordered_keys = ["RDNA4_PROMPT", "HIGH_CORRECT_PROMPT", "HIGH_PERF_PROMPT", "QUANT_OP_PROMPT"]
         
         choices = ["-- Select template to load --"]
         for key in ordered_keys:
@@ -68,8 +68,8 @@ class KernelBenchGradioApp:
                 choices.append(display_label)
                 display_to_key[display_label] = key
                 
-                # Set HIGH_CORRECT_PROMPT as default
-                if key == "HIGH_CORRECT_PROMPT":
+                # Set RDNA4_PROMPT as default for RDNA4 deployments
+                if key == "RDNA4_PROMPT":
                     default_value = display_label
                     default_content = template.get("content", "")
         
@@ -651,7 +651,7 @@ class KernelBenchGradioApp:
                             
                             with gr.Row():
                                 backend = gr.Dropdown(
-                                    choices=["cuda", "triton", "cute"],
+                                    choices=["triton"],
                                     value="triton",
                                     label="Backend"
                                 )
@@ -701,7 +701,7 @@ class KernelBenchGradioApp:
                                 
                                 target_speedup = gr.Slider(
                                     label="Target Speedup",
-                                    value=1.0,
+                                    value=1.5,
                                     minimum=0.1,
                                     maximum=10.0,
                                     step=0.1,

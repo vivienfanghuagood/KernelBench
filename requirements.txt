@@ -1,17 +1,26 @@
 # Frameworks
 # torch==2.5.0
 # we shall upgrade torch for blackwell when it is stable
+# AMD ROCm note: install ROCm-enabled torch from the PyTorch ROCm index.
+# Current ROCm env:
+# torch==2.8.0+rocm7.1.1.gitcba8b9d2
+# HIP==7.1.52802-26aae437f6
+# ROCm SMI (concise):
+# Device IDs: 0x7551 x4
 transformers
 datasets
 modal
 
 # DSLs
 # nvidia-cutlass-dsl
+# triton (required for AMD ROCm kernels)
+# helion (optional, Helion DSL; install separately if needed)
 
 # helper
 tqdm
 packaging
 pydra_config
+dill>=0.3.7,<0.4
 pytest
 ninja
 

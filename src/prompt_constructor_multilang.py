@@ -1,5 +1,10 @@
 import os
 from .utils import read_file
+from .prompts.amd_gpu.prompts import (
+    HIGH_CORRECT_PROMPT,
+    RDNA4_PROMPT,
+    QUANT_OP_PROMPT,
+)
 
 """
 Multi-Language Prompt Constructor
@@ -123,12 +128,15 @@ def prompt_generate_custom_triton_from_prompt_template(ref_arch_src: str) -> str
 
 
 def prompt_generate_prompt_with_hardware_info_from_template_triton(
-    ref_arch_src: str, gpu_name: str
+    ref_arch_src: str, gpu_name: str, vendor: str = "nvidia"
 ) -> str:
     """
     Similar to prompt_generate_custom_triton_from_prompt_template,
     but with hardware information for the given GPU
     """
+    if vendor.lower() == "amd":
+        return _build_triton_prompt_with_amd_hw(ref_arch_src, gpu_name)
+
     arch = ref_arch_src
 
     example_arch_path = os.path.join(REPO_TOP_PATH, f"src/prompts/model_ex_add.py")
@@ -150,6 +158,92 @@ def prompt_generate_prompt_with_hardware_info_from_template_triton(
         example_new_arch_src=example_new_arch,
         gpu_spec_info_src=gpu_spec_info,
     )
+
+
+def _build_triton_prompt_with_amd_hw(ref_arch_src: str, gpu_name: str) -> str:
+    """
+    Build the Triton prompt with AMD hardware info and AMD-specific guidance.
+    """
+    arch = ref_arch_src
+
+    example_arch_path = os.path.join(REPO_TOP_PATH, f"src/prompts/model_ex_add.py")
+    example_new_arch_path = os.path.join(
+        REPO_TOP_PATH, f"src/prompts/model_new_ex_add_triton.py"
+    )
+
+    example_arch = read_file(example_arch_path)
+    example_new_arch = read_file(example_new_arch_path)
+
+    prompt = TRITON_PROBLEM_STATEMENT
+
+    if example_arch and example_new_arch:
+        prompt += f"""
+        Here's an example to show you the syntax of inline embedding custom Triton kernels in torch: The example given architecture is: \n
+        ``` \n
+        {example_arch}
+        ``` \n
+        The example new arch with custom Triton kernels looks like this: 
+        ```
+        {example_new_arch}
+        ``` \n
+        """
+
+    # Load AMD GPU spec info
+    amd_spec_file_path = os.path.join(
+        REPO_TOP_PATH, "src/prompts/hardware/amd_gpu_specs.py"
+    )
+    amd_spec_info_src = read_file(amd_spec_file_path)
+    amd_spec_local = {}
+    exec(amd_spec_info_src, {}, amd_spec_local)
+    amd_gpu_spec_info = amd_spec_local.get("AMD_GPU_SPEC_INFO", {})
+    amd_gpu_definitions = amd_spec_local.get("AMD_GPU_DEFINITIONS", {})
+    amd_gpu_best_practices = amd_spec_local.get("AMD_GPU_BEST_PRACTICES", [])
+
+    prompt += f"""
+    Here is some information about the underlying hardware that you should keep in mind. \n\n
+The GPU that will run the kernel is AMD {gpu_name}.\n\n"""
+
+    gpu_key = None
+    for key in amd_gpu_spec_info.keys():
+        if key.lower() in gpu_name.lower():
+            gpu_key = key
+            break
+    if gpu_key is None and amd_gpu_spec_info:
+        gpu_key = next(iter(amd_gpu_spec_info))
+
+    if gpu_key:
+        gpu_info = amd_gpu_spec_info[gpu_key]
+        for key, value in gpu_info.items():
+            prompt += f"- {key}: {value}\n"
+
+    if amd_gpu_definitions:
+        prompt += "\nHere are some concepts about AMD GPU architecture:\n\n"
+        for key, value in amd_gpu_definitions.items():
+            prompt += f"- {key}: {value}\n"
+
+    if amd_gpu_best_practices:
+        prompt += "\nHere are some best practices for writing Triton kernels on AMD GPUs:\n\n"
+        for best_practice in amd_gpu_best_practices:
+            prompt += f"- {best_practice}\n"
+
+    # Add AMD-specific guidance
+    prompt += "\n\n### AMD GPU Optimization Guidance\n\n"
+    prompt += HIGH_CORRECT_PROMPT
+
+    gpu_name_lower = gpu_name.lower()
+    if "gfx12" in gpu_name_lower or "rdna4" in gpu_name_lower or "rx 9" in gpu_name_lower or "rx9" in gpu_name_lower:
+        prompt += "\n\n" + RDNA4_PROMPT
+    if "mi300" in gpu_name_lower or "mi355" in gpu_name_lower or "mi3" in gpu_name_lower:
+        prompt += "\n\n" + HIGH_CORRECT_PROMPT
+
+    prompt += f"""
+    You are given the following architecture: \n
+    ```
+    {arch}
+    ```
+    """
+    prompt += TRITON_PROBLEM_INSTRUCTION
+    return prompt
 
 
 def prompt_generate_prompt_with_hardware_info_triton(
@@ -498,7 +592,12 @@ def prompt_fix_correctness_cute(ref_arch_src, custom_kernel, metadata):
 # Unified API
 ################################################################################
 
-def get_prompt_for_backend(ref_arch_src: str, backend: str = "triton") -> str:
+def get_prompt_for_backend(
+    ref_arch_src: str,
+    backend: str = "triton",
+    gpu_name: str | None = None,
+    vendor: str = "nvidia",
+) -> str:
     """
     Unified API to get prompt for any supported backend
     
@@ -512,6 +611,10 @@ def get_prompt_for_backend(ref_arch_src: str, backend: str = "triton") -> str:
     backend_lower = backend.lower()
     
     if backend_lower == "triton":
+        if gpu_name:
+            return prompt_generate_prompt_with_hardware_info_from_template_triton(
+                ref_arch_src, gpu_name, vendor=vendor
+            )
         return prompt_generate_custom_triton_from_prompt_template(ref_arch_src)
     # elif backend_lower == "tilelang":
     #     return prompt_generate_custom_tilelang_from_prompt_template(ref_arch_src)

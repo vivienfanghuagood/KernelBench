@@ -1,0 +1,3 @@
+"""
+AMD GPU prompt templates.
+"""

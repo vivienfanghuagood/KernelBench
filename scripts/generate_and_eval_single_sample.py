@@ -9,8 +9,12 @@ from datasets import load_dataset
 
 from src.dataset import construct_kernelbench_dataset
 from src.eval import eval_kernel_against_ref
-from src.prompt_constructor import prompt_generate_custom_cuda_from_prompt_template
+from src.prompt_constructor import (
+    prompt_generate_custom_cuda_from_prompt_template,
+    prompt_generate_prompt_with_hardware_info_from_template,
+)
 from src.prompt_constructor_multilang import get_prompt_for_backend
+from src.eval import get_gpu_info
 from src.utils import (
     create_inference_server_from_presets,
     extract_first_code,
@@ -43,11 +47,12 @@ class EvalConfig(Config):
         self.problem_id = REQUIRED
 
         # Evaluation
-        # local (requires a GPU), modal (cloud GPU) coming soon
+        # local (requires a GPU), sandbox (local Flask sandbox), modal (cloud GPU) coming soon
         self.eval_mode = "local"
+        self.sandbox_url = "http://localhost:8000"
         # Construct this from mapping from architecture name to torch cuda arch list in the future
         # you can either specify SM version or just use the name
-        self.gpu_arch = ["Ada"]
+        self.gpu_arch = ["gfx1201"]
 
         # Inference config
         self.server_type = "deepseek"
@@ -65,6 +70,9 @@ class EvalConfig(Config):
         self.log_eval_result = False
 
         self.backend = "cuda"
+        # Optional overrides for hardware-aware prompts
+        self.gpu_name = ""
+        self.gpu_vendor = "auto"
 
     def verbose_logging(self):
         self.log = True
@@ -146,10 +154,26 @@ def main(config: EvalConfig):
     )
 
     # Use appropriate prompt constructor based on backend
+    vendor = config.gpu_vendor
+    gpu_name = config.gpu_name
+    if (vendor == "auto" or not gpu_name) and torch.cuda.is_available():
+        gpu_info = get_gpu_info()
+        if vendor == "auto":
+            vendor = gpu_info.get("vendor", "unknown")
+        if not gpu_name:
+            gpu_name = gpu_info.get("name", "")
+
     if config.backend == "cuda":
-        custom_prompt = prompt_generate_custom_cuda_from_prompt_template(ref_arch_src)
+        if vendor in ["amd", "nvidia"] and gpu_name:
+            custom_prompt = prompt_generate_prompt_with_hardware_info_from_template(
+                ref_arch_src, gpu_name, vendor=vendor
+            )
+        else:
+            custom_prompt = prompt_generate_custom_cuda_from_prompt_template(ref_arch_src)
     elif config.backend in ["triton", "cute"]:  # removed "tilelang"
-        custom_prompt = get_prompt_for_backend(ref_arch_src, config.backend)
+        custom_prompt = get_prompt_for_backend(
+            ref_arch_src, config.backend, gpu_name=gpu_name or None, vendor=vendor
+        )
     else:
         raise ValueError(
             f"Unsupported backend: {config.backend}. Must be 'cuda', 'triton', or 'cute'."

@@ -1,5 +1,12 @@
 import os
 from .utils import read_file
+from .prompts.amd_gpu.prompts import (
+    QUANT_OP_PROMPT,
+    HIGH_CORRECT_PROMPT,
+    HIGH_PERF_PROMPT,
+    RDNA4_PROMPT,
+    HELION_PROMPT,
+)
 
 
 """
@@ -347,12 +354,29 @@ def prompt_generate_custom_cuda_from_prompt_template(ref_arch_src: str) -> str:
     return prompt_generate_custom_cuda(arch, example_arch, example_new_arch)
 
 
-def prompt_generate_prompt_with_hardware_info_from_template(ref_arch_src: str, gpu_name: str) -> str:
+def prompt_generate_prompt_with_hardware_info_from_template(
+    ref_arch_src: str,
+    gpu_name: str,
+    vendor: str = "nvidia",
+) -> str:
     """
-    Similar to prompt_generate_custom_cuda_from_prompt_template, 
-    but with hardware information for the given GPU
-    """
+    Similar to prompt_generate_custom_cuda_from_prompt_template,
+    but with hardware information for the given GPU vendor.
 
+    Args:
+        ref_arch_src: Reference architecture source code
+        gpu_name: GPU name (e.g., "L40S", "MI300X")
+        vendor: GPU vendor ("nvidia" or "amd")
+    """
+    if vendor.lower() == "amd":
+        return _build_amd_prompt(ref_arch_src, gpu_name)
+    return _build_nvidia_prompt(ref_arch_src, gpu_name)
+
+
+def _build_nvidia_prompt(ref_arch_src: str, gpu_name: str) -> str:
+    """
+    Build the NVIDIA prompt with hardware info.
+    """
     arch = ref_arch_src
     # These are strictly defined for now
 
@@ -371,12 +395,105 @@ def prompt_generate_prompt_with_hardware_info_from_template(ref_arch_src: str, g
     gpu_spec_info = read_file(gpu_spec_file_path)
 
     return prompt_generate_prompt_with_hardware_info(
-                                        ref_arch_src=arch, 
-                                        gpu_name=gpu_name, 
-                                        example_arch_src=example_arch, 
-                                        example_new_arch_src=example_new_arch, 
-                                        gpu_spec_info_src=gpu_spec_info
-                                        )
+        ref_arch_src=arch,
+        gpu_name=gpu_name,
+        example_arch_src=example_arch,
+        example_new_arch_src=example_new_arch,
+        gpu_spec_info_src=gpu_spec_info,
+    )
+
+
+def _build_amd_prompt(ref_arch_src: str, gpu_name: str) -> str:
+    """
+    Build the AMD prompt with hardware info and AMD-specific guidance.
+    """
+    arch = ref_arch_src
+    # These are strictly defined for now
+    example_arch_path = os.path.join(
+        REPO_TOP_PATH, f"src/prompts/model_ex_add.py"
+    )
+    example_new_arch_path = os.path.join(
+        REPO_TOP_PATH, f"src/prompts/model_new_ex_add.py"
+    )
+
+    example_arch = read_file(example_arch_path)
+    example_new_arch = read_file(example_new_arch_path)
+
+    prompt = PROBLEM_STATEMENT
+
+    if example_arch and example_new_arch:
+        prompt += f"""
+        Here's an example to show you the syntax of inline embedding custom CUDA operators in torch: The example given architecture is: \n
+        ``` \n
+        {example_arch}
+        ``` \n
+        The example new arch with custom CUDA kernels looks like this: 
+        ```
+        {example_new_arch}
+        ``` \n
+        """
+
+    # Load AMD GPU spec info
+    amd_spec_file_path = os.path.join(
+        REPO_TOP_PATH, "src/prompts/hardware/amd_gpu_specs.py"
+    )
+    amd_spec_info_src = read_file(amd_spec_file_path)
+    amd_spec_local = {}
+    exec(amd_spec_info_src, {}, amd_spec_local)
+    AMD_GPU_SPEC_INFO = amd_spec_local.get("AMD_GPU_SPEC_INFO", {})
+    AMD_GPU_DEFINITIONS = amd_spec_local.get("AMD_GPU_DEFINITIONS", {})
+    AMD_GPU_BEST_PRACTICES = amd_spec_local.get("AMD_GPU_BEST_PRACTICES", [])
+
+    prompt += f"""
+    Here is some information about the underlying hardware that you should keep in mind. \n\n
+The GPU that will run the kernel is AMD {gpu_name}.\n\n"""
+
+    # Try to match by gfx name first, fall back to first entry
+    gpu_key = None
+    for key in AMD_GPU_SPEC_INFO.keys():
+        if key.lower() in gpu_name.lower():
+            gpu_key = key
+            break
+    if gpu_key is None and AMD_GPU_SPEC_INFO:
+        gpu_key = next(iter(AMD_GPU_SPEC_INFO))
+
+    if gpu_key:
+        gpu_info = AMD_GPU_SPEC_INFO[gpu_key]
+        for key, value in gpu_info.items():
+            prompt += f"- {key}: {value}\n"
+
+    if AMD_GPU_DEFINITIONS:
+        prompt += "\nHere are some concepts about AMD GPU architecture:\n\n"
+        for key, value in AMD_GPU_DEFINITIONS.items():
+            prompt += f"- {key}: {value}\n"
+
+    if AMD_GPU_BEST_PRACTICES:
+        prompt += "\nHere are some best practices for writing Triton kernels on AMD GPUs:\n\n"
+        for best_practice in AMD_GPU_BEST_PRACTICES:
+            prompt += f"- {best_practice}\n"
+
+    # Add AMD-specific guidance
+    prompt += "\n\n### AMD GPU Optimization Guidance\n\n"
+    prompt += HIGH_CORRECT_PROMPT
+
+    gpu_name_lower = gpu_name.lower()
+    if "gfx12" in gpu_name_lower or "rdna4" in gpu_name_lower or "rx 9" in gpu_name_lower or "rx9" in gpu_name_lower:
+        prompt += "\n\n" + RDNA4_PROMPT
+    if "mi300" in gpu_name_lower or "mi355" in gpu_name_lower or "mi3" in gpu_name_lower:
+        prompt += "\n\n" + QUANT_OP_PROMPT
+
+    # Provide Helion guidance for AMD users that choose Helion backend
+    prompt += "\n\n" + HELION_PROMPT
+
+    prompt += f"""
+    You are given the following architecture: \n
+    ```
+    {arch}
+    ```
+    """
+
+    prompt += PROBLEM_INSTRUCTION
+    return prompt
     
 
 

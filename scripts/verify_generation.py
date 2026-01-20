@@ -1,7 +1,12 @@
 import sys, os
+import torch
 import src.utils as utils
 import time
-from src.prompt_constructor import prompt_generate_custom_cuda_from_prompt_template
+from src.prompt_constructor import (
+    prompt_generate_custom_cuda_from_prompt_template,
+    prompt_generate_prompt_with_hardware_info_from_template,
+)
+from src.eval import get_gpu_info
 
 """
 For testing infernece and quickly iterate on prompts 
@@ -25,7 +30,19 @@ def inference_with_prompt(arch_path, inference_server: callable = None, log_to_l
         with open("./scratch/model.py", "w") as f:
             f.write(arch)
 
-    custom_cuda_prompt = prompt_generate_custom_cuda_from_prompt_template(arch)
+    vendor = "unknown"
+    gpu_name = ""
+    if torch.cuda.is_available():
+        gpu_info = get_gpu_info()
+        vendor = gpu_info.get("vendor", "unknown")
+        gpu_name = gpu_info.get("name", "")
+
+    if vendor in ["amd", "nvidia"] and gpu_name:
+        custom_cuda_prompt = prompt_generate_prompt_with_hardware_info_from_template(
+            arch, gpu_name, vendor=vendor
+        )
+    else:
+        custom_cuda_prompt = prompt_generate_custom_cuda_from_prompt_template(arch)
 
     if log_to_local:    
         with open(f"./scratch/prompt.py", "w") as f:

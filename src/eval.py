@@ -1,5 +1,9 @@
 """
 Helpers for Evaluations
+
+Supports both NVIDIA CUDA and AMD ROCm GPUs.
+ROCm support is provided through PyTorch's HIP backend, which exposes
+the same torch.cuda API for AMD GPUs.
 """
 import hashlib
 import importlib
@@ -12,7 +16,9 @@ import tempfile
 import traceback
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
-from typing import Union
+from typing import Union, Literal
+
+"Use Literal to specify the type of the device"
 
 import numpy as np
 import requests
@@ -23,6 +29,101 @@ from pydantic import BaseModel, ConfigDict
 from . import utils
 
 
+################################################################################
+# GPU Detection and Compatibility
+################################################################################
+
+def is_rocm_available() -> bool:
+    """
+    Check if ROCm (AMD GPU) is available.
+    ROCm uses PyTorch's HIP backend which exposes torch.cuda API.
+    """
+    if not torch.cuda.is_available():
+        return False
+    # Check for HIP version (ROCm indicator)
+    return hasattr(torch.version, 'hip') and torch.version.hip is not None
+
+
+def is_cuda_available() -> bool:
+    """
+    Check if NVIDIA CUDA is available (not ROCm).
+    """
+    if not torch.cuda.is_available():
+        return False
+    return not is_rocm_available()
+
+
+def get_gpu_vendor() -> Literal["nvidia", "amd", "unknown"]:
+    """
+    Detect the GPU vendor (NVIDIA or AMD).
+    """
+    if not torch.cuda.is_available():
+        return "unknown"
+    if is_rocm_available():
+        return "amd"
+    return "nvidia"
+
+
+def get_gpu_info(device: torch.device = None) -> dict:
+    """
+    Get GPU information including vendor, name, and memory.
+    
+    Returns:
+        dict with keys: vendor, name, memory_total_gb, compute_capability (NVIDIA only)
+    """
+    if device is None:
+        device = torch.cuda.current_device()
+    
+    info = {
+        "vendor": get_gpu_vendor(),
+        "name": torch.cuda.get_device_name(device),
+        "memory_total_gb": torch.cuda.get_device_properties(device).total_memory / (1024**3),
+    }
+    
+    # Add compute capability for NVIDIA GPUs
+    if info["vendor"] == "nvidia":
+        props = torch.cuda.get_device_properties(device)
+        info["compute_capability"] = f"{props.major}.{props.minor}"
+    
+    # Add ROCm-specific info for AMD GPUs
+    if info["vendor"] == "amd":
+        info["hip_version"] = torch.version.hip
+        # Try to get architecture info
+        try:
+            props = torch.cuda.get_device_properties(device)
+            info["gcn_arch"] = getattr(props, 'gcnArchName', 'unknown')
+        except:
+            pass
+    
+    return info
+
+
+def check_gpu_available(verbose: bool = False) -> bool:
+    """
+    Check if any GPU (CUDA or ROCm) is available.
+    
+    Args:
+        verbose: If True, print GPU information
+    
+    Returns:
+        True if GPU is available, False otherwise
+    """
+    if not torch.cuda.is_available():
+        if verbose:
+            print("[GPU] No GPU available")
+        return False
+    
+    if verbose:
+        gpu_info = get_gpu_info()
+        vendor_name = "AMD ROCm" if gpu_info["vendor"] == "amd" else "NVIDIA CUDA"
+        print(f"[GPU] {vendor_name} available: {gpu_info['name']}")
+        print(f"[GPU] Memory: {gpu_info['memory_total_gb']:.1f} GB")
+        if gpu_info["vendor"] == "amd":
+            print(f"[GPU] HIP Version: {gpu_info.get('hip_version', 'unknown')}")
+        else:
+            print(f"[GPU] Compute Capability: {gpu_info.get('compute_capability', 'unknown')}")
+    
+    return True
 
 
 REPO_TOP_PATH = os.path.abspath(
@@ -83,9 +184,19 @@ def fetch_ref_arch_from_level_problem_id(level, problem_id, with_name=False):
 
 
 def set_seed(seed: int):
+    """
+    Set random seed for reproducibility.
+    Works with both NVIDIA CUDA and AMD ROCm GPUs.
+    """
     torch.manual_seed(seed)
-    # NOTE: this only sets on current cuda device
-    torch.cuda.manual_seed(seed)
+    # NOTE: this sets on current GPU device (CUDA or ROCm via HIP)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)  # for multi-GPU
+    # Set deterministic behavior
+    "NOTE: this is not supported for ROCm"
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 class KernelExecResult(BaseModel):
@@ -150,8 +261,11 @@ def load_custom_model_with_tempfile(model_custom_src, entry_point="ModelNew"):
     Returns both a Model class and the temporary file. The temporary file must be
     deleted manually be the caller.
 
-    This is a hack that is needed for triton code as compile / exec do not play well
-    with the @triton.jit decorator.
+    This is needed for:
+    - Triton code: compile/exec do not play well with @triton.jit decorator
+    - Helion code: requires source file to exist for inspect.getsource() at runtime
+    
+    Works with both NVIDIA CUDA and AMD ROCm GPUs.
     """
 
     # Create a temporary named file with a .py extension
@@ -166,6 +280,8 @@ def load_custom_model_with_tempfile(model_custom_src, entry_point="ModelNew"):
     spec = importlib.util.spec_from_file_location("temp_module", tempfile_path)
     # Create a new module based on that spec
     temp_module = importlib.util.module_from_spec(spec)
+    # Register module in sys.modules (needed for Helion's inspect.getsource())
+    sys.modules["temp_module"] = temp_module
     # Execute the code in the module's namespace
     spec.loader.exec_module(temp_module)
 
@@ -269,22 +385,39 @@ def graceful_eval_cleanup(
     tempfile: tempfile.NamedTemporaryFile = None,
 ):
     """
-    Clean up env, gpu cache, and compiled CUDA extensions after evaluation
+    Clean up environment, GPU cache, and compiled extensions after evaluation.
+    Works with both NVIDIA CUDA and AMD ROCm GPUs.
     """
+    # Clean up linecache entries
     fake_filenames = [k for k in linecache.cache.keys() if k.startswith(("<generated_model_", "<original_model_"))]
     for fname in fake_filenames:
         del linecache.cache[fname]
     
+    # Clean up temp_module from sys.modules if it exists (used by Helion)
+    if "temp_module" in sys.modules:
+        del sys.modules["temp_module"]
+    
     del curr_context
     
-    with torch.cuda.device(device):
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats(device=device)
-        torch.cuda.synchronize(device=device)
+    # Clean up GPU memory (works for both CUDA and ROCm)
+    if torch.cuda.is_available():
+        try:
+            with torch.cuda.device(device):
+                torch.cuda.empty_cache()
+                torch.cuda.reset_peak_memory_stats(device=device)
+                torch.cuda.synchronize(device=device)
+        except Exception:
+            # Ignore cleanup errors
+            pass
     
+    # Clean up temporary file
     if tempfile:
-        tempfile.close()
-        os.remove(tempfile.name)
+        try:
+            tempfile.close()
+            if os.path.exists(tempfile.name):
+                os.remove(tempfile.name)
+        except Exception:
+            pass
 
 
 def build_compile_cache_legacy(
@@ -415,8 +548,8 @@ def _process_input_tensor(tensor, device, backend):
     
     Args:
         tensor: Input tensor or non-tensor value
-        device: Target CUDA device
-        backend: Backend type (e.g., 'cuda', 'triton', 'cute')
+        device: Target GPU device (CUDA or ROCm)
+        backend: Backend type (e.g., 'cuda', 'triton', 'cute', 'helion')
     
     Returns:
         Processed tensor on correct device with correct dtype, or original value if not a tensor
@@ -428,8 +561,11 @@ def _process_input_tensor(tensor, device, backend):
     if tensor.dtype in [torch.int32, torch.int64, torch.long]:
         return tensor.to(device=device)
     
-    # Apply backend-specific dtype casting for float tensors
-    # if backend.lower() == "tilelang":
+    # Backend-specific dtype handling
+    backend_lower = backend.lower() if backend else "cuda"
+    
+    # Helion may benefit from fp16 on some AMD GPUs
+    # if backend_lower == "helion":
     #     return tensor.to(device=device, dtype=torch.float16)
     
     # Default for all other backends and float types
@@ -447,23 +583,36 @@ def eval_kernel_against_ref(
     build_dir: os.PathLike = None,
     device: Union[torch.device, int] = (
         torch.cuda.current_device() if torch.cuda.is_available() else None
-    ),  # have to run on GPU
-    backend: str = "cuda",  # can be 'cuda', 'triton', or 'cute'
+    ),  # have to run on GPU (CUDA or ROCm)
+    backend: str = "cuda",  # can be 'cuda', 'triton', 'cute', or 'helion'
 ) -> KernelExecResult:
     """
-    Evaluate the custom kernel against the original model
-
-    num_correct_trials: number of trials to initialize different random inputs; correctness pass only if all trials pass
-    num_perf_trials: run the evalutation many times to take the average
-    device: GPU (cuda) device to run the evalutation on
-    backend: str, one of 'cuda', 'triton', or 'cute'
-    """
-    # TODO: check device is busy
-    assert torch.cuda.is_available(), "CUDA is not available, cannot run Eval"
+    Evaluate the custom kernel against the original model.
     
-    # SET DEFAULT DTYPE TO FLOAT16 ONLY FOR TILELANG
-    # if backend.lower() == "tilelang":
-    #     torch.set_default_dtype(torch.float16)
+    Supports both NVIDIA CUDA and AMD ROCm GPUs.
+
+    Args:
+        original_model_src: Source code of the reference PyTorch model
+        custom_model_src: Source code of the optimized model with custom kernels
+        seed_num: Random seed for reproducibility
+        num_correct_trials: Number of trials for correctness check
+        num_perf_trials: Number of trials for performance measurement
+        verbose: Enable verbose logging
+        measure_performance: Whether to measure and compare performance
+        build_dir: Directory for caching compiled kernels
+        device: GPU device to run evaluation on (CUDA or ROCm)
+        backend: One of 'cuda', 'triton', 'cute', or 'helion'
+    
+    Returns:
+        KernelExecResult with compilation status, correctness, and performance metrics
+    """
+    # Check GPU availability (works for both CUDA and ROCm)
+    if not check_gpu_available(verbose=verbose):
+        raise RuntimeError("No GPU available (CUDA or ROCm), cannot run Eval")
+    
+    # Get GPU vendor info for metadata
+    gpu_vendor = get_gpu_vendor()
+    gpu_info = get_gpu_info(device if isinstance(device, int) else None)
     
     torch.set_printoptions(
         precision=4,  # Decimal places
@@ -472,34 +621,57 @@ def eval_kernel_against_ref(
         linewidth=80,  # Maximum width before wrapping
     )
 
-    # set CUDA device
+    # Set GPU device (works for both CUDA and ROCm via HIP)
     torch.cuda.set_device(device)
     
-    # Backends that use tempfile approach and need CUDA_VISIBLE_DEVICES
-    uses_tempfile = backend.lower() in ["triton", "cute"]  # removed "tilelang"
+    # Backends that use tempfile approach
+    # - triton: @triton.jit decorator requires file-based import
+    # - cute: CUTLASS requires file-based compilation
+    # - helion: @helion.kernel decorator requires inspect.getsource()
+    backend_lower = backend.lower()
+    uses_tempfile = backend_lower in ["triton", "cute", "helion"]
     
     metadata = {}  # for storing result metadata
     metadata["hardware"] = torch.cuda.get_device_name(device=device)
-    metadata["device"] = str(device)  # for debugging
+    metadata["device"] = str(device)
+    metadata["gpu_vendor"] = gpu_vendor
+    metadata["backend"] = backend_lower
+    
+    # Add vendor-specific info
+    # AMD ROCm specific info
+    if gpu_vendor == "amd":
+        metadata["hip_version"] = gpu_info.get("hip_version", "unknown")
+        metadata["gcn_arch"] = gpu_info.get("gcn_arch", "unknown")
+    else:
+        metadata["compute_capability"] = gpu_info.get("compute_capability", "unknown")
 
     if uses_tempfile:
-        # need to set env var for triton/cute code to guarantee no wrong device shenanigans
+        # Set device visibility for triton/cute/helion
         if isinstance(device, int):
             device_num = device
         elif isinstance(device, torch.device):
             assert (
                 device.type == "cuda"
-            ), "CUDA is not availible on device, cannot run Eval"
-            device_num = device.index
+            ), "GPU is not available on device, cannot run Eval"
+            device_num = device.index if device.index is not None else 0
         else:
             raise ValueError(
                 f"device must be an int or torch.device, got {type(device)}"
             )
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(device_num)
+        
+        # Set device visibility
+        # For ROCm, use HIP_VISIBLE_DEVICES; for CUDA, use CUDA_VISIBLE_DEVICES
+        if gpu_vendor == "amd":
+            os.environ["HIP_VISIBLE_DEVICES"] = str(device_num)
+            os.environ["ROCR_VISIBLE_DEVICES"] = str(device_num)
+        else:
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(device_num)
+    
     context = {}
-
+    "Context is a dictionary that stores the context of the evaluation"
     if verbose:
-        print(f"[Eval] Start Evalulation! on device: {device}")
+        vendor_str = "AMD ROCm" if gpu_vendor == "amd" else "NVIDIA CUDA"
+        print(f"[Eval] Start Evaluation on device: {device} ({vendor_str})")
         print("[Eval] Loading Original Model")
 
     Model, get_init_inputs, get_inputs = load_original_model_and_inputs(
@@ -519,36 +691,37 @@ def eval_kernel_against_ref(
             print("[Eval] Original Model Loaded")
     
     if verbose:
-        print("[Eval] Loading and Compiling New Model with Custom CUDA Kernel")
+        backend_name = backend_lower.upper()
+        print(f"[Eval] Loading and Compiling New Model with Custom {backend_name} Kernel")
 
-    # this is where compilation happens
+    # This is where compilation happens
     try:
-        os.environ["TORCH_USE_CUDA_DSA"] = "1"  # compile with device side assertion
+        # Enable device-side assertions for debugging
+        os.environ["TORCH_USE_CUDA_DSA"] = "1"
         tempfile = None
-        # add hash for later to distinguish between multi-turn kernels
         
-        backend_lower = backend.lower()
-        # if backend_lower == "tilelang":
-        #     # Use linecache approach for TileLang
-        #     ModelNew = load_tilelang_model(custom_model_src, context, build_dir)
-        if backend_lower in ["triton", "cute"]:
-            # Use tempfile approach for triton and cute
+        if backend_lower in ["triton", "cute", "helion"]:
+            # Use tempfile approach for:
+            # - triton: @triton.jit decorator requires file-based import
+            # - cute: CUTLASS requires file-based compilation  
+            # - helion: @helion.kernel decorator requires inspect.getsource()
             ModelNew, tempfile = load_custom_model_with_tempfile(
                 custom_model_src, entry_point="ModelNew"
             )
         else:
-            # Default CUDA backend
+            # Default CUDA backend (inline compilation)
             ModelNew = load_custom_model(custom_model_src, context, build_dir)
-        torch.cuda.synchronize(device=device)  # not sure if this is too much
+        
+        torch.cuda.synchronize(device=device)
     except Exception as e:
         print(
-            f"Failed to compile custom CUDA kernel: Record as compilation failure. \nError: {e}"
+            f"Failed to compile custom {backend_lower.upper()} kernel: Record as compilation failure. \nError: {e}"
         )
         # TODO: add metadata for compilation error (how to we get the compilation error message?)
 
         if "lock" in str(e) or "No such file or directory" in str(e):
-            # this is a lock file error, likely due to concurrent compilation
-            # this does not necessarily mean the compilation failed, but we should retry
+            # This is a lock file error, likely due to concurrent compilation
+            # This does not necessarily mean the compilation failed, but we should retry
             print(
                 f"[Eval] Lock file error during compilation, Please retry. Error: {e}"
             )
@@ -556,45 +729,29 @@ def eval_kernel_against_ref(
             return None
         else:
             metadata["compilation_error_name"] = get_error_name(e)
-            metadata["compilation_error"] = e
+            metadata["compilation_error"] = str(e)
             graceful_eval_cleanup(context, device, tempfile)
             return KernelExecResult(
                 compiled=False, metadata=metadata
             )  # skip further steps
 
-    # at this point we passed compilation
+    # At this point we passed compilation
     try:
         with torch.no_grad():
             set_seed(seed_num)  # set seed for reproducible weights
             custom_model = ModelNew(*init_inputs)
             assert hasattr(custom_model, "forward")
-            # Move models to GPU with float16 dtype (only for TileLang)
-            # if backend.lower() == "tilelang":
-            #     try:
-            #         original_model = original_model.to(device=device, dtype=torch.float16)
-            #     except Exception as e:
-            #         # TileLang JIT kernels may not support .to(), already on GPU
-            #         if verbose:
-            #             print(f"[Info] Could not call .to() on original model (TileLang), using as-is: {e}")
-            #             print("[Traceback]:")
-            #             traceback.print_exc()
-            #     try:
-            #         custom_model = custom_model.to(device=device, dtype=torch.float16)
-            #     except Exception as e:
-            #         # TileLang JIT kernels may not support .to(), already on GPU
-            #         if verbose:
-            #             print(f"[Info] Could not call .to() on custom model (TileLang), using as-is: {e}")
-            #             print("[Traceback]:")
-            #             traceback.print_exc()
-            # else:
+            
+            # Move models to GPU
             original_model = original_model.to(device=device)
             custom_model = custom_model.to(device=device)
             torch.cuda.synchronize(device=device)
+        
         if verbose:
-            print("[Eval] New Model with Custom CUDA Kernel Loaded")
+            print(f"[Eval] New Model with Custom {backend_lower.upper()} Kernel Loaded")
     except RuntimeError as e:
         print(
-            f"Failed to load custom CUDA kernel; Compiled but not able to run, count as runtime error. \nError: {e}"
+            f"Failed to load custom {backend_lower.upper()} kernel; Compiled but not able to run, count as runtime error. \nError: {e}"
         )
         # TODO: add metadata for runtime error e.g. error in launching kernel, illegal memory access, ...
         graceful_eval_cleanup(context, device, tempfile)
@@ -647,7 +804,7 @@ def eval_kernel_against_ref(
                 ref_model = original_model.to(device=device)
                 torch.cuda.synchronize(device=device)
                 
-                ref_elapsed_times = time_execution_with_cuda_event(
+                ref_elapsed_times = time_execution_with_gpu_event(
                     ref_model,
                     *ref_inputs,
                     num_trials=num_perf_trials,
@@ -671,7 +828,7 @@ def eval_kernel_against_ref(
                 model_new = custom_model.to(device=device)
                 torch.cuda.synchronize(device=device)
 
-                elapsed_times = time_execution_with_cuda_event(
+                elapsed_times = time_execution_with_gpu_event(
                     model_new,
                     *inputs,
                     num_trials=num_perf_trials,
@@ -724,7 +881,7 @@ def register_and_format_exception(
     return metadata
 
 
-def time_execution_with_cuda_event(
+def time_execution_with_gpu_event(
     kernel_fn: callable,
     *args,
     num_warmup: int = 3,
@@ -733,14 +890,18 @@ def time_execution_with_cuda_event(
     device: torch.device = None,
 ) -> list[float]:
     """
-    Time a CUDA kernel function over multiple trials using torch.cuda.Event
+    Time a GPU kernel function over multiple trials using torch.cuda.Event.
+    
+    Works with both NVIDIA CUDA and AMD ROCm GPUs.
+    The torch.cuda.Event API is supported by both backends.
 
     Args:
         kernel_fn: Function to time
         *args: Arguments to pass to kernel_fn
+        num_warmup: Number of warmup iterations
         num_trials: Number of timing trials to run
         verbose: Whether to print per-trial timing info
-        device: CUDA device to use, if None, use current device
+        device: GPU device to use, if None, use current device
 
     Returns:
         List of elapsed times in milliseconds
@@ -750,36 +911,75 @@ def time_execution_with_cuda_event(
             print(f"Using current device: {torch.cuda.current_device()}")
         device = torch.cuda.current_device()
 
+    # Normalize device to an index for torch.cuda APIs
+    if isinstance(device, torch.device):
+        cuda_device = device.index if device.type == "cuda" else None
+    else:
+        cuda_device = device
+
     # Warm ups
     for _ in range(num_warmup):
         kernel_fn(*args)
-        torch.cuda.synchronize(device=device)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize(device=cuda_device)
 
+    gpu_vendor = get_gpu_vendor()
+    vendor_str = "ROCm" if gpu_vendor == "amd" else "CUDA"
+    device_name = "unknown"
+    if torch.cuda.is_available():
+        try:
+            device_name = torch.cuda.get_device_name(cuda_device)
+        except Exception:
+            device_name = "unknown"
     print(
-        f"[Profiling] Using device: {device} {torch.cuda.get_device_name(device)}, warm up {num_warmup}, trials {num_trials}"
+        f"[Profiling] Using device: {device} {device_name} ({vendor_str}), "
+        f"warmup {num_warmup}, trials {num_trials}"
     )
     elapsed_times = []
 
     # Actual trials
-    for trial in range(num_trials):
-        # create event marker default is not interprocess
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
+    use_events = torch.cuda.is_available()
+    if use_events:
+        try:
+            _ = torch.cuda.Event(enable_timing=True)
+        except Exception:
+            use_events = False
 
-        start_event.record()
-        kernel_fn(*args)
-        end_event.record()
+    if use_events:
+        for trial in range(num_trials):
+            # Create event markers
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
 
-        # Synchronize to ensure the events have completed
-        torch.cuda.synchronize(device=device)
+            start_event.record()
+            kernel_fn(*args)
+            end_event.record()
 
-        # Calculate the elapsed time in milliseconds
-        elapsed_time_ms = start_event.elapsed_time(end_event)
-        if verbose:
-            print(f"Trial {trial + 1}: {elapsed_time_ms:.3g} ms")
-        elapsed_times.append(elapsed_time_ms)
+            # Synchronize to ensure the events have completed
+            torch.cuda.synchronize(device=cuda_device)
+
+            # Calculate the elapsed time in milliseconds
+            elapsed_time_ms = start_event.elapsed_time(end_event)
+            if verbose:
+                print(f"Trial {trial + 1}: {elapsed_time_ms:.3g} ms")
+            elapsed_times.append(elapsed_time_ms)
+    else:
+        # ROCm fallback if CUDA events are not supported
+        for trial in range(num_trials):
+            start_time = time.perf_counter()
+            kernel_fn(*args)
+            if torch.cuda.is_available():
+                torch.cuda.synchronize(device=cuda_device)
+            elapsed_time_ms = (time.perf_counter() - start_time) * 1000.0
+            if verbose:
+                print(f"Trial {trial + 1}: {elapsed_time_ms:.3g} ms")
+            elapsed_times.append(elapsed_time_ms)
 
     return elapsed_times
+
+
+# Alias for backward compatibility
+time_execution_with_cuda_event = time_execution_with_gpu_event
 
 
 def run_and_check_correctness(
@@ -794,12 +994,24 @@ def run_and_check_correctness(
     backend="cuda",
 ) -> KernelExecResult:
     """
-    run the model and check correctness,
-    assume model already loaded and compiled (loaded and compiled in the caller)
-    this is all on GPU, requiring cuda device and transfer .cuda()
+    Run the model and check correctness against reference implementation.
+    
+    Assumes models are already loaded and compiled (done in the caller).
+    Works with both NVIDIA CUDA and AMD ROCm GPUs.
 
-    num_correct_trials: run the evalutation multiple times with (ideally) different random inputs to ensure correctness
-    backend: backend type for handling dtype conversions
+    Args:
+        original_model_instance: Reference PyTorch model instance
+        new_model_instance: Custom kernel model instance to validate
+        get_inputs_fn: Function that returns input tensors
+        metadata: Dict to store evaluation metadata
+        num_correct_trials: Number of trials with different random inputs
+        verbose: Enable verbose logging
+        seed: Random seed for reproducibility
+        device: GPU device (CUDA or ROCm)
+        backend: Backend type ('cuda', 'triton', 'cute', 'helion')
+    
+    Returns:
+        KernelExecResult with correctness status and metadata
     """
     pass_count = 0
 
@@ -1008,12 +1220,15 @@ def fetch_baseline_time(
 def get_timing_stats(elapsed_times: list[float], device: torch.device = None) -> dict:
     """Get timing statistics from a list of elapsed times.
 
+    Works with both NVIDIA CUDA and AMD ROCm GPUs.
+
     Args:
         elapsed_times: List of elapsed times in milliseconds
-        device: CUDA device, record device info
+        device: GPU device (CUDA or ROCm), record device info
+        
     Returns:
-        Dict containing mean, std, min, max and num_trials
-        all timing are in ms
+        Dict containing mean, std, min, max, num_trials, and device info
+        All timing values are in milliseconds.
     """
 
     stats = {
@@ -1024,9 +1239,10 @@ def get_timing_stats(elapsed_times: list[float], device: torch.device = None) ->
         "num_trials": len(elapsed_times),
     }
 
-    if device:
+    if device is not None and torch.cuda.is_available():
         stats["hardware"] = torch.cuda.get_device_name(device=device)
-        stats["device"] = str(device)  # for debugging
+        stats["device"] = str(device)
+        stats["gpu_vendor"] = get_gpu_vendor()
 
     return stats
 

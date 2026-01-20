@@ -25,6 +25,7 @@ from src.eval import (
     check_metadata_serializable_all_types,
     eval_kernel_against_ref,
     KernelExecResult,
+    get_gpu_vendor,
 )
 
 from src.utils import read_file, set_gpu_arch
@@ -195,7 +196,7 @@ class EvalConfig(Config):
         # For Local: GPU architecture to compile for (e.g., ["Ada"], ["Ampere"], ["Hopper"])
         # Only used when eval_mode="local"
         # Common architectures: Ada (RTX 40 series), Ampere (RTX 30 series, A100), Hopper (H100)
-        self.gpu_arch = ["Ada"]
+        self.gpu_arch = ["gfx1201"]
 
         # Logging
         # Top Directory to Store Runs
@@ -711,6 +712,13 @@ def main(config: EvalConfig):
     if config.eval_mode == "local":
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA device not available. Local evaluation requires GPU.")
+
+        gpu_vendor = get_gpu_vendor()
+        if gpu_vendor == "amd" and config.backend == "cuda":
+            raise RuntimeError(
+                "ROCm detected: CUDA kernel evaluation is not supported. "
+                "Use backend='triton' with ROCm-capable Triton, or run reference-only eval."
+            )
         
         # Validate that gpu parameter is not a cloud GPU type when using local mode
         if config.gpu in gpu_arch_mapping:

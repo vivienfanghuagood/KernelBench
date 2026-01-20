@@ -67,7 +67,7 @@ class ScriptConfig(Config):
         self.clear_cache = False # TODO
 
         # Replace with your NVIDIA GPU architecture, e.g. ["Hopper"]
-        self.gpu_arch = ["Ada"] 
+        self.gpu_arch = ["gfx1201"]
 
     def __repr__(self):
         return f"ScriptConfig({self.to_dict()})"

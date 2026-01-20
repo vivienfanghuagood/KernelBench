@@ -22,22 +22,24 @@ def measure_program_time(
     Measure the time of a KernelBench reference architecture
     """
     context = {}
+    device = torch.device(device) if not isinstance(device, torch.device) else device
     Model, get_init_inputs, get_inputs = load_original_model_and_inputs(
         ref_arch_src, context
     )
     try:
         with torch.no_grad():
-            torch.cuda.synchronize(device=device)
+            if device.type == "cuda":
+                torch.cuda.synchronize(device=device)
             set_seed(42)
             inputs = get_inputs()
             set_seed(42)
             init_inputs = get_init_inputs()
             inputs = [
-                x.cuda(device=device) if isinstance(x, torch.Tensor) else x
+                x.to(device=device) if isinstance(x, torch.Tensor) else x
                 for x in inputs
             ]
             init_inputs = [
-                x.cuda(device=device) if isinstance(x, torch.Tensor) else x
+                x.to(device=device) if isinstance(x, torch.Tensor) else x
                 for x in init_inputs
             ]
 
@@ -50,8 +52,9 @@ def measure_program_time(
             else:
                 print(f"Using PyTorch Eager Execution on {ref_arch_name}")
             
-            model = model.cuda(device=device)
-            torch.cuda.synchronize(device=device)
+            model = model.to(device=device)
+            if device.type == "cuda":
+                torch.cuda.synchronize(device=device)
             elapsed_times = time_execution_with_cuda_event(
                 model, *inputs, num_trials=num_trials, verbose=verbose, device=device
             )

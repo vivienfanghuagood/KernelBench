@@ -10,8 +10,12 @@ from pydra import Config, REQUIRED
 
 from src.dataset import construct_kernelbench_dataset
 from src.eval import eval_kernel_against_ref
-from src.prompt_constructor import prompt_generate_custom_cuda_from_prompt_template
+from src.prompt_constructor import (
+    prompt_generate_custom_cuda_from_prompt_template,
+    prompt_generate_prompt_with_hardware_info_from_template,
+)
 from src.prompt_constructor_multilang import get_prompt_for_backend
+from src.eval import get_gpu_info
 from src.utils import (
     create_inference_server_from_presets,
     extract_first_code,
@@ -72,7 +76,11 @@ class GenerationConfig(Config):
 
         self.log_prompt = False
 
-        self.backend = "cuda"
+        # For AMD/ROCm, prefer Triton kernels
+        self.backend = "triton"
+        # Optional overrides for hardware-aware prompts
+        self.gpu_name = ""
+        self.gpu_vendor = "auto"
 
     def greedy(self):
         # For greedy decoding, epsecially baseline eval
@@ -120,12 +128,29 @@ def generate_sample_single(
     ), f"Problem number in filename ({problem_number}) does not match config problem_id ({config.problem_id})"
 
     # Construct Prompt
+    vendor = config.gpu_vendor
+    gpu_name = config.gpu_name
+    if (vendor == "auto" or not gpu_name) and torch.cuda.is_available():
+        gpu_info = get_gpu_info()
+        if vendor == "auto":
+            vendor = gpu_info.get("vendor", "unknown")
+        if not gpu_name:
+            gpu_name = gpu_info.get("name", "")
+
     if config.backend == "cuda":
-        custom_cuda_prompt = prompt_generate_custom_cuda_from_prompt_template(
-            ref_arch_src
+        if vendor in ["amd", "nvidia"] and gpu_name:
+            custom_cuda_prompt = prompt_generate_prompt_with_hardware_info_from_template(
+                ref_arch_src, gpu_name, vendor=vendor
+            )
+        else:
+            custom_cuda_prompt = prompt_generate_custom_cuda_from_prompt_template(
+                ref_arch_src
+            )
+    elif config.backend in ["triton", "cute", "kernel"]:  # removed "tilelang"
+        backend = "triton" if config.backend == "kernel" else config.backend
+        custom_cuda_prompt = get_prompt_for_backend(
+            ref_arch_src, backend, gpu_name=gpu_name or None, vendor=vendor
         )
-    elif config.backend in ["triton", "cute"]:  # removed "tilelang"
-        custom_cuda_prompt = get_prompt_for_backend(ref_arch_src, config.backend)
     else:
         raise ValueError(
             f"Unsupported backend: {config.backend}. Must be 'cuda', 'triton', or 'cute'."

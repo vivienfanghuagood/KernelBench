@@ -80,46 +80,144 @@ pip install -r requirements.txt
 pip install -e . 
 ```
 
-To call LLM API providers, set your `{INFERENCE_SERVER_PROVIDER}_API_KEY` API key.
-
-Running and profiling kernels require a GPU. 
+### GPU Setup
+Running and profiling kernels require a GPU.
 If you don't have GPU available locally, you can set up [Modal](https://modal.com/). Set up your modal token after creating an account by running `modal token new`. Then, use the `generate_and_eval_single_sample_modal.py` script.
 
+#### NVIDIA (CUDA)
+- Use default backend `cuda` (recommended).
+- Ensure a CUDA-enabled PyTorch install.
+
+#### AMD ROCm (Radeon / MI-Series)
+KernelBench can run on AMD GPUs via ROCm (HIP) using the same PyTorch `torch.cuda` API.
+
+1) Install ROCm-enabled PyTorch (pick the correct ROCm version for your system):
+```
+# Example (adjust ROCm version as needed)
+pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/rocm6.4
+```
+
+2) Verify GPU visibility:
+```
+python - <<'PY'
+import torch
+print("HIP:", torch.version.hip)
+print("GPU:", torch.cuda.get_device_name(0))
+print(torch.cuda.get_device_properties(0))
+PY
+```
+
+3) Optional: select specific GPU(s)
+```
+export HIP_VISIBLE_DEVICES=0
+export ROCR_VISIBLE_DEVICES=0
+```
+
+> Note: For AMD, use `backend=triton` or `backend=helion` where applicable. CUDA backend is NVIDIA-only.
+
+##### AMD ROCm Tips
+- **What works**: AMD hardware-aware prompts, Triton backend generation, and ROCm-friendly timing.
+- **What does not (by default)**: CUDA backend evaluation on ROCm is blocked to avoid CUDA-only compile paths.
+- **Troubleshooting**: Ensure Triton is ROCm-enabled and PyTorch is a ROCm build.
+
+To call LLM API providers, set the provider API key in your environment:
+```
+export OPENAI_API_KEY="your_api_key_here"
+```
+
 ## 🚀 Usage
-### Run on a single problem 
-It is easier to get started with a single problem. This will fetch the problem, generate a sample, and evaluate the sample.
+### Run on a single problem
+This will fetch the problem, generate a sample, and evaluate the sample.
 
 ```
-# for example, run level 2 problem 40 from huggingface
-
+# Example: run level 2 problem 40 from Hugging Face
 python3 scripts/generate_and_eval_single_sample.py dataset_src="huggingface" level=2 problem_id=40
 
 # dataset_src could be "local" or "huggingface"
-# add .verbose_logging for more visbility
+# add .verbose_logging for more visibility
 ```
 
-We are also supporting other GPU programming languages beyond `cuda`. Simply specify `backend=triton`. For now we support (`cuda`, `triton`, `cute`).
+We also support other GPU programming languages beyond `cuda`. Set `backend=triton`, `backend=cute`, or `backend=helion` as needed.
 
-### Run on all problems 
+#### AMD ROCm Example Commands
+Use `backend=triton` (recommended) or `backend=helion` on AMD GPUs:
+```
+# Triton on AMD ROCm (single problem)
+python3 scripts/generate_and_eval_single_sample.py \
+  dataset_src="huggingface" level=2 problem_id=40 \
+  backend=triton
+
+# Helion on AMD ROCm (single problem) (still in progress)
+python3 scripts/generate_and_eval_single_sample.py \
+  dataset_src="huggingface" level=2 problem_id=40 \
+  backend=helion
+```
+
+If you want to target a specific AMD GPU:
+```
+HIP_VISIBLE_DEVICES=0 ROCR_VISIBLE_DEVICES=0 \
+python3 scripts/generate_and_eval_single_sample.py \
+  dataset_src="huggingface" level=2 problem_id=40 \
+  backend=triton
+```
+
+##### Optional: Force AMD Prompt Inputs
+Some scripts auto-detect GPU vendor/name. You can override:
+```
+python3 scripts/generate_and_eval_single_sample.py \
+  dataset_src=huggingface \
+  level=1 \
+  problem_id=1 \
+  backend=triton \
+  gpu_vendor=amd \
+  gpu_name=MI355X
+```
+
+### Run on all problems
 
 ```
 # 1. Generate responses and store kernels locally to runs/{run_name} directory
-python3 scripts/generate_samples.py run_name=test_hf_level_1 dataset_src=huggingface level=1 num_workers=50 server_type=deepseek model_name=deepseek-chat temperature=0
+python3 scripts/generate_samples.py \
+  run_name=test_hf_level_1 dataset_src=huggingface level=1 num_workers=50 \
+  server_type=deepseek model_name=deepseek-chat temperature=0
 
-# 2. Evaluate on all generated kernels in runs/{run_name} directory
+# If you use LLM_GATEWAY_KEY (AMD gateway), set server_type=openai and temperature=1
+
+# 2. Evaluate all generated kernels in runs/{run_name}
 python3 scripts/eval_from_generations.py run_name=test_hf_level_1 dataset_src=local level=1 num_gpu_devices=8 timeout=300
 
-# If you like to speedup evaluation, you can use parallelize compilation on CPUs before getting to evluation on GPUs
-# add build_cache=True and num_cpu_workers=<num_cpu_workers> to the command
+# To speed up evaluation, parallelize compilation on CPUs before GPU evaluation.
+# Add build_cache=True and num_cpu_workers=<num_cpu_workers> to the command.
+```
+
+##### AMD Triton Quick Start (batch)
+```
+python3 scripts/generate_samples.py \
+  run_name=amd_test \
+  dataset_src=huggingface \
+  level=1 \
+  backend=triton
+
+python3 scripts/eval_from_generations.py \
+  run_name=amd_test \
+  dataset_src=huggingface \
+  level=1 \
+  backend=triton \
+  eval_mode=local
+```
+
+##### AMD Baseline Timing
+```
+python3 scripts/get_baseline_time_single_problem.py
 ```
 ### Analyze the eval results to compute Benchmark Performance
-We provide `scripts/benchmark_eval_analysis.py` to analyze the eval results to compute success rate, timing metric, and overall benchmark performance  `fast_p`. 
+Use `scripts/benchmark_eval_analysis.py` to compute success rate, timing metrics, and overall benchmark performance `fast_p`.
 
 ```
 python3 scripts/benchmark_eval_analysis.py run_name=test_hf_level_1 level=1 hardware=L40S_matx3 baseline=baseline_time_torch
 ```
-If you are using a different hardware, you can generate the baseline time with `scripts/generate_baseline_time.py` script.
-We provide some reference baseline times a variety of NVIDIA GPUs across generations in `results/timing`, but we recommend you to generate your own baseline time for more accurate results (cluster power, software version, all affects timing result). See `results/timing/README.md` for more details.
+If you use different hardware, generate a baseline with `scripts/generate_baseline_time.py`.
+We provide reference baselines for various NVIDIA GPUs in `results/timing`, but we recommend generating your own for accuracy (cluster power and software versions affect timing). See `results/timing/README.md` for details.
 
 ### Multi-Turn Framework
 We have also releaed the test-time framework [Caesar](https://github.com/simonguozirui/caesar) that are used in the multi-turn / iterative refinement experiments in our paper. You can use or modify this framework for high-throughput test-time scaling (both sequential and parallel) targeting KernelBench problems. 
